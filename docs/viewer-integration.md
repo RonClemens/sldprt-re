@@ -93,8 +93,9 @@ so `new THREE.Matrix4().fromArray(m)` applies directly.
 6. **Orientation.** Use the `.glb` default (`+Y` up, `+Z` front) so the existing opt-in Orientation control still works.
 7. **Scale/performance.** The viewer makes one `Mesh` per instance. The facility's biggest assembly has 2,890 instances, so
    expect to need either `InstancedMesh` per part or an option to hide/skip small hardware; decide after measuring in the viewer.
-8. **Manual / B-W callouts** operate on the final `cadParts` as today; boxes that never resolved are shown as such (or excluded
-   from the manual by a flag), not drawn as if they were real geometry.
+8. **Unresolved parts toggle.** Boxes for parts that failed or never finished are controlled by a user toggle ("Show unresolved
+   parts", on by default while importing). It applies to the 3D view, the B/W callout diagram and the assembly manual; when off,
+   those parts are hidden and skipped in the parts list numbering used for output. They are never drawn as if they were real geometry.
 
 ## 6. What this repo will deliver
 
@@ -104,9 +105,10 @@ so `new THREE.Matrix4().fromArray(m)` applies directly.
 3. A fake-data mode (`serve.py --replay report.json`) so the viewer can be developed without waiting for real conversions.
 4. Converter fixes found on real data (listed in the README status section as they land).
 
-## 7. Open questions
+## 7. Decisions
 
-- Packaging: is "have Python installed" acceptable for end users, or is a single downloadable executable needed?
-- Is `InstancedMesh`/hide-small-parts acceptable for very large assemblies, or must every instance stay an individually
-  selectable `Mesh`?
-- Should unresolved parts appear in the assembly manual as boxes, or be excluded?
+- **Packaging:** Python 3 on the user's machine is required for now (`pip install numpy scipy`). No bundled executable.
+- **Large assemblies:** left to a performance evaluation once the viewer path exists. Default is one `Mesh` per instance; switch to
+  `InstancedMesh` per part and/or hide-small-hardware only if measurements on the facility assembly demand it.
+- **Unresolved parts:** the user can toggle them on/off. Each failed or pending part keeps its box; a "Show unresolved parts" toggle
+  (sidebar + manual options) controls whether the boxes are shown in the 3D view, the B/W diagram and the assembly manual.
