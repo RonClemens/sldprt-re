@@ -2,7 +2,7 @@
 """SLDPRT (SolidWorks 2015+) -> GLB/OBJ without SolidWorks.
 container (chunked, raw-deflate) -> Parasolid XT transmit -> B-rep -> tessellation -> glTF/OBJ.
 usage: sldprt2glb.py part.SLDPRT --schema sch_13006.s_t -o outdir"""
-import argparse, os, struct, zlib, sys
+import argparse, os, re, struct, zlib, sys
 sys.path.insert(0,os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
 from sldcont import read_streams
@@ -11,9 +11,19 @@ import tess
 from export import build_mesh, write_obj, write_glb
 MAGIC=bytes.fromhex('231dd571da8148a2a85898b21b89ef99')
 def geometry_transmits(streams):
-    """yield (stream_name, section_idx, transmit bytes) for geometry streams"""
+    """yield (stream_name, section_idx, transmit bytes) for geometry streams.
+    *-Partition: [u32 len][section]... back to back. */LocalBodies (imported / multi-body parts): MFC-framed, so the same
+    sections are found by scanning for the section magic instead."""
     for name,data in streams.items():
-        if not (name.endswith('-Partition') or name.endswith('/LocalBodies')): continue
+        if name.endswith('/LocalBodies'):
+            for k,m in enumerate(re.finditer(re.escape(MAGIC),data)):
+                p=m.start()
+                if p+24>len(data): continue
+                cs=struct.unpack_from('<I',data,p+20)[0]
+                try: yield name,k,zlib.decompress(data[p+24:p+24+cs])
+                except Exception: continue
+            continue
+        if not name.endswith('-Partition'): continue
         pos=0;k=0
         while pos+4<=len(data):
             ln=struct.unpack_from('<I',data,pos)[0]; sec=data[pos+4:pos+4+ln]
@@ -50,8 +60,8 @@ def _load_part(path,schema,log,bbox):
         try: br=Brep(raw,schema)
         except Exception as e: log('skip',name,k,repr(e)); continue
         nf=sum(1 for n in br.N.values() if n['name']=='FACE')
-        if best is None or nf>best[0]: best=(nf,br)
-    if best is None: raise ValueError('no decodable Parasolid body found')
+        if nf and (best is None or nf>best[0]): best=(nf,br)
+    if best is None: raise ValueError('no decodable Parasolid body with faces found')
     best[1].bbox=bbox
     return build_mesh(best[1],tess.tess_face,log=log)
 def main():
