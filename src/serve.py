@@ -117,6 +117,7 @@ class Server:
             if getattr(j, 'used_asms', None) and not j.cancel:
                 try:
                     from sldasm_mates import build_report
+                    os.environ['SLD_SEARCH_ROOT'] = os.path.join(j.dir, 'src')    # mate resolution reads part faces: it must find parts and virtual components too
                     rep = build_report(max(j.used_asms, key=os.path.getsize), SCHEMA)
                     j.emit('mates', **json.loads(json.dumps(dict(joints=rep['joints'], mates=[{k: m[k] for k in ('name', 'type', 'entities', 'params', 'check') if k in m} for m in rep['mates']]), default=_np)))
                 except Exception as e: j.emit('mates_unavailable', reason=repr(e)[:150])

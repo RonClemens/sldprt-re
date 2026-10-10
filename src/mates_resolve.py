@@ -26,7 +26,9 @@ def face_index(part_path,schema):
             idx.setdefault((vals[1],vals[4] if len(vals)>4 else None),[]).append(g)
     return idx
 def to_world(g,M):
-    R=M[:3,:3]; return dict(g,point=g['point']@R+M[3,:3],dir=g['dir']@R)
+    R=M[:3,:3]
+    if 'point' not in g or 'dir' not in g: return dict(g)    # non-analytic faces (B-spline, ...) carry no axis/plane to place
+    return dict(g,point=g['point']@R+M[3,:3],dir=g['dir']@R)
 def line_dist(p1,d1,p2,d2):
     d1=d1/np.linalg.norm(d1); d2=d2/np.linalg.norm(d2); c=np.cross(d1,d2)
     if np.linalg.norm(c)<1e-9: return np.linalg.norm(np.cross(p2-p1,d1)),0.0
@@ -39,14 +41,23 @@ def resolve(sldasm,folder,schema):
     mates=parse_mates(st[mkey]); cache={}
     def part_faces(part):
         if part not in cache:
-            p=[os.path.join(folder,f) for f in os.listdir(folder) if f.lower()==part.lower()+'.sldprt'][0]; cache[part]=face_index(p,schema)
+            want=part.lower()+'.sldprt'; p=next((os.path.join(folder,f) for f in os.listdir(folder) if f.lower()==want),None)
+            if p is None:    # not beside the assembly: search the extracted tree(s) (ZIP sub-folders, virtual components)
+                for r_ in [r for r in os.environ.get('SLD_SEARCH_ROOT','').split(os.pathsep) if r]:
+                    for d_,_,fs_ in os.walk(r_):
+                        hit=next((f for f in fs_ if f.lower()==want),None)
+                        if hit: p=os.path.join(d_,hit); break
+                    if p: break
+            try: cache[part]=face_index(p,schema) if p else {}    # part file unavailable: its mates stay unresolved instead of aborting the assembly
+            except Exception: cache[part]={}
         return cache[part]
     offs=[m['offset'] for m in mates]+[len(st[mkey])]
     def flat_faces(part): return [g for gs in part_faces(part).values() for g in gs]
     for k,m in enumerate(mates):
         if m['entities'] or m['idreps']: continue
         # binary layout (no component-path / id-rep strings): see mates_bin.py
-        ents=decode_entities(st[mkey],offs[k],offs[k+1],inst,flat_faces,prefer=('CYLINDER','CONE') if m['type']=='concentric' else ('PLANE',))
+        try: ents=decode_entities(st[mkey],offs[k],offs[k+1],inst,flat_faces,prefer=('CYLINDER','CONE') if m['type']=='concentric' else ('PLANE',))
+        except Exception as e: m['entities']=[]; m['layout']='binary'; m['error']=repr(e)[:100]; continue
         for e in ents:
             e['top']=e['instance'].split('/')[0]; e['is_assembly_level']=False
             if e['_face'] is not None: e['face']=to_world(e['_face'],e['_inst']['M']); e['face']['part']=e['_inst']['part']
@@ -55,20 +66,23 @@ def resolve(sldasm,folder,schema):
         if m['type'] in ('distance','angle') : m.setdefault('params',{})['D1']=mate_value(st[mkey],offs[k],offs[k+1])
     for m in mates:
         if m.get('layout')=='binary': continue
-        ents=m['entities']; reps=list(m['idreps'])
-        for e in ents:
-            path='/'.join(comp_path(e['component'])); e['instance']=path; e['top']=comp_path(e['component'])[0]
-            inst_=byname.get(path)
-            e['is_assembly_level']= inst_ is None   # a sub-assembly (its origin planes etc.)
-            e['_inst']=inst_
-        # assign id-reps to entities: first entity (in order) whose part owns a face with those ids
-        used=set()
-        for r in reps:
-            cls,vals=parse_idrep(r); key=(vals[0],vals[1])
-            for k,e in enumerate(ents):
-                if k in used or e['_inst'] is None: continue
-                g=part_faces(e['_inst']['part']).get(key)
-                if g: e['idrep']=r; used.add(k); e['face']=to_world(g[0],e['_inst']['M']); e['face']['part']=e['_inst']['part']; break
+        try:
+            ents=m['entities']; reps=list(m['idreps'])
+            for e in ents:
+                path='/'.join(comp_path(e['component'])); e['instance']=path; e['top']=comp_path(e['component'])[0]
+                inst_=byname.get(path)
+                e['is_assembly_level']= inst_ is None   # a sub-assembly (its origin planes etc.)
+                e['_inst']=inst_
+            # assign id-reps to entities: first entity (in order) whose part owns a face with those ids
+            used=set()
+            for r in reps:
+                try: cls,vals=parse_idrep(r); key=(vals[0],vals[1])
+                except (ValueError,IndexError): m.setdefault('unparsed_idreps',[]).append(r[:60]); continue    # id-rep classes not decoded yet (e.g. moDerivedSurfIdRep_c)
+                for k,e in enumerate(ents):
+                    if k in used or e['_inst'] is None: continue
+                    g=part_faces(e['_inst']['part']).get(key)
+                    if g: e['idrep']=r; used.add(k); e['face']=to_world(g[0],e['_inst']['M']); e['face']['part']=e['_inst']['part']; break
+        except Exception as e: m['entities']=[]; m['error']=repr(e)[:100]    # one odd mate must not abort the whole assembly
     return mates,inst,models,root
 def check(mates):
     rows=[]
