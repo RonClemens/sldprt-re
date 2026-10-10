@@ -21,6 +21,15 @@ python3 sldasm_mates.py asm.SLDASM --schema sch_13006_s_t.txt -o mates.json
 Assembly conversion expects the referenced part files in the same folder as the `.SLDASM` (matched by file name).
 GLB is in metres, Y-up; OBJ is in millimetres.
 
+## Batch conversion and survey
+
+```bash
+python3 tools/survey.py  Hydro_CAD.zip -o survey.json [--tess]   # report only: versions, surface/curve types, failures
+python3 src/batch.py     Hydro_CAD.zip -o out [--jobs N]         # parts converted once in parallel (disk cache), one GLB per top-level assembly, out/report.json
+```
+
+A failing part or assembly never stops a batch run; parts referenced from an assembly are looked up in its folder, then anywhere in the ZIP by file name.
+
 ## Tests
 
 ```bash
