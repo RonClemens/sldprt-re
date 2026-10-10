@@ -24,7 +24,8 @@ def read_val(r,code):
     raise ValueError('code '+code)
 def base_layout(t):
     return [dict(name=f['name'],code=f['code'],n=f['n']) for f in t['fields'] if f['transmitted']]
-def parse(buf, base):
+def parse(buf, base, partial=False):
+    """partial=True: a truncated stream returns the nodes read so far (flagged 'truncated') instead of raising"""
     r=R(buf)
     assert buf[:2]==b'PS'; r.p=2
     banner=r.s32(); schema=r.s32()
@@ -34,43 +35,50 @@ def parse(buf, base):
     order=[]
     while True:
         start=r.p
-        nt=r.i16()
+        try: nt=r.i16()
+        except Exception:
+            if partial: return dict(banner=banner,schema=schema,nodes=nodes,order=order,truncated=True,end=start,layouts=layouts)
+            raise
         if nt==1:
             return dict(banner=banner,schema=schema,nodes=nodes,order=order,tail=r.i16(),end=r.p,layouts=layouts)
-        if nt not in layouts:
-            fc=r.u8()
-            if fc==255 and nt in base:
-                bt=base[nt]; layouts[nt]=(bt['name'],bool(bt['variable']),base_layout(bt))
-            elif nt in base:
-                bt=base[nt]; bl=base_layout(bt); bi=0; fl=[]; var=bool(bt['variable'])
-                while True:
-                    c=chr(r.u8())
-                    if c=='Z': break
-                    if c=='C': fl.append(bl[bi]); bi+=1
-                    elif c=='D': bi+=1
-                    elif c in 'IA':
-                        fl.append(read_emb(r))
-                    else: raise ValueError(f'bad delta {c!r} at {r.p-1} type {nt}')
-                layouts[nt]=(bt['name'],var,fl)
-            else:
-                name=r.s8(); desc=r.s8()
-                fl=[read_emb(r) for _ in range(fc)]
-                var=any(f.get('var') for f in fl)
-                layouts[nt]=(name,var,fl)
-        name,var,fl=layouts[nt]
-        count=r.i32() if var else None
-        nid=r.i16()
-        node=dict(type=nt,name=name,id=nid)
-        for k,f in enumerate(fl):
-            n=f['n']
-            last=(k==len(fl)-1)
-            if var and last:
-                if f['code']=='c': v=''.join(read_val(r,'c') for _ in range(count))
-                else: v=[read_val(r,f['code']) for _ in range(count)]
-            elif n>1:
-                v=[read_val(r,f['code']) for _ in range(n)]
-            else: v=read_val(r,f['code'])
-            node[f['name']]=v
+        try:
+            if nt not in layouts:
+                fc=r.u8()
+                if fc==255 and nt in base:
+                    bt=base[nt]; layouts[nt]=(bt['name'],bool(bt['variable']),base_layout(bt))
+                elif nt in base:
+                    bt=base[nt]; bl=base_layout(bt); bi=0; fl=[]; var=bool(bt['variable'])
+                    while True:
+                        c=chr(r.u8())
+                        if c=='Z': break
+                        if c=='C': fl.append(bl[bi]); bi+=1
+                        elif c=='D': bi+=1
+                        elif c in 'IA':
+                            fl.append(read_emb(r))
+                        else: raise ValueError(f'bad delta {c!r} at {r.p-1} type {nt}')
+                    layouts[nt]=(bt['name'],var,fl)
+                else:
+                    name=r.s8(); desc=r.s8()
+                    fl=[read_emb(r) for _ in range(fc)]
+                    var=any(f.get('var') for f in fl)
+                    layouts[nt]=(name,var,fl)
+            name,var,fl=layouts[nt]
+            count=r.i32() if var else None
+            nid=r.i16()
+            node=dict(type=nt,name=name,id=nid)
+            for k,f in enumerate(fl):
+                n=f['n']
+                last=(k==len(fl)-1)
+                if var and last:
+                    if f['code']=='c': v=''.join(read_val(r,'c') for _ in range(count))
+                    else: v=[read_val(r,f['code']) for _ in range(count)]
+                elif n>1:
+                    v=[read_val(r,f['code']) for _ in range(n)]
+                else: v=read_val(r,f['code'])
+                node[f['name']]=v
+        except Exception:
+            if partial: return dict(banner=banner,schema=schema,nodes=nodes,order=order,truncated=True,end=start,layouts=layouts)
+            raise
         nodes[nid]=node; order.append(nid)
 def read_emb(r):
     name=r.s8(); pc=r.i16(); n=r.i16()

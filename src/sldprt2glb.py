@@ -63,7 +63,9 @@ def _load_part(path,schema,log,bbox):
         if nf and (best is None or nf>best[0]): best=(nf,br)
     if best is None: raise ValueError('no decodable Parasolid body with faces found')
     best[1].bbox=bbox
-    return build_mesh(best[1],tess.tess_face,log=log)
+    r=build_mesh(best[1],tess.tess_face,log=log)
+    if getattr(best[1],'truncated',False): r[4].append(('truncated','body cut off at 1 MiB in the file; geometry incomplete'))    # surfaced through the failed-face count
+    return r
 def main():
     ap=argparse.ArgumentParser(); ap.add_argument('sldprt'); ap.add_argument('--schema',required=True); ap.add_argument('-o','--out',default='out')
     a=ap.parse_args(); os.makedirs(a.out,exist_ok=True)
