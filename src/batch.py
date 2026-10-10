@@ -49,7 +49,7 @@ def top_level(asms):
     return [a for a in ok if os.path.basename(a).lower() not in used] or ok
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument('src'); ap.add_argument('-o', '--out', default='out')
-    ap.add_argument('--jobs', type=int, default=os.cpu_count()); ap.add_argument('--timeout', type=int, default=900)
+    ap.add_argument('--jobs', type=int, default=os.cpu_count()); ap.add_argument('--timeout', type=int, default=900, help='per part, seconds'); ap.add_argument('--asm-timeout', type=int, default=1800, help='per assembly, seconds')
     ap.add_argument('--work', help='extraction + cache dir (default: temp)'); a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     work = a.work or tempfile.mkdtemp(prefix='sldbatch_'); os.makedirs(work, exist_ok=True)
@@ -63,16 +63,24 @@ def main():
     with mp.Pool(max(1, a.jobs), maxtasksperchild=10) as pool:
         for i, r in enumerate(pool.imap_unordered(warm, [(p, a.timeout) for p in parts]), 1):
             rep['parts'].append(r); print(f'[{i}/{len(parts)}]', r['file'], 'ok' if r['ok'] else 'FAILED ' + r['error'], flush=True)
-    for asm in top_level(asms):
-        base = os.path.splitext(os.path.basename(asm))[0]
-        r = subprocess.run([sys.executable, '-I', os.path.join(HERE, 'sldasm2glb.py'), asm, '--schema', SCHEMA, '-o', a.out],
-                           capture_output=True, text=True, cwd=HERE, env=os.environ)
-        missing = [l.split()[-1] for l in r.stdout.splitlines() if l.startswith(('MISSING', 'FAILED part'))]
-        rep['assemblies'].append(dict(file=os.path.basename(asm), ok=r.returncode == 0, glb=base + '.glb' if r.returncode == 0 else None,
-                                      problems=[l for l in r.stdout.splitlines() if l.startswith(('MISSING', 'FAILED part'))], error=r.stderr[-300:] if r.returncode else None))
-        print('assembly', base, 'ok' if r.returncode == 0 else 'FAILED', flush=True)
+    def save(): json.dump(rep, open(os.path.join(a.out, 'report.json'), 'w'), indent=1)
+    todo = sorted(top_level(asms), key=os.path.getsize)    # smallest first: quick results early, giants last
+    def run_asm(asm):
+        base = os.path.splitext(os.path.basename(asm))[0]; t1 = time.time()
+        try:
+            r = subprocess.run([sys.executable, '-I', os.path.join(HERE, 'sldasm2glb.py'), asm, '--schema', SCHEMA, '-o', a.out],
+                               capture_output=True, text=True, cwd=HERE, env=os.environ, timeout=a.asm_timeout)
+        except subprocess.TimeoutExpired:
+            return dict(file=os.path.basename(asm), ok=False, error=f'timeout after {a.asm_timeout}s', sec=round(time.time() - t1, 1))
+        return dict(file=os.path.basename(asm), ok=r.returncode == 0, glb=base + '.glb' if r.returncode == 0 else None, sec=round(time.time() - t1, 1),
+                    problems=[l for l in r.stdout.splitlines() if l.startswith(('MISSING', 'FAILED part'))], error=r.stderr[-300:] if r.returncode else None)
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    with ThreadPoolExecutor(max(1, min(a.jobs, 3))) as ex:     # assemblies hold all parts in memory: keep concurrency modest
+        for f in as_completed([ex.submit(run_asm, x) for x in todo]):
+            r = f.result(); rep['assemblies'].append(r); save()
+            print('assembly', r['file'], 'ok' if r['ok'] else 'FAILED ' + str(r.get('error'))[:80], f"{r['sec']}s", flush=True)
     rep['seconds'] = round(time.time() - t0, 1)
-    json.dump(rep, open(os.path.join(a.out, 'report.json'), 'w'), indent=1)
+    save()
     bad = [p for p in rep['parts'] if not p['ok']]
     print(f"done: {len(parts) - len(bad)}/{len(parts)} parts, {sum(x['ok'] for x in rep['assemblies'])}/{len(rep['assemblies'])} assemblies, report.json written")
 if __name__ == '__main__': main()
