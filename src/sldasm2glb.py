@@ -58,12 +58,13 @@ def main():
         nonlocal index
         for f in os.listdir(folder):
             if f.lower()==fn.lower(): return os.path.join(folder,f)
-        root_=os.environ.get('SLD_SEARCH_ROOT')    # fallback: same file name anywhere under this tree (ZIPs with sub-folders)
-        if root_:
+        roots_=[r for r in os.environ.get('SLD_SEARCH_ROOT','').split(os.pathsep) if r]    # fallback: same file name anywhere under these trees (ZIPs with sub-folders, extracted virtual components)
+        if roots_:
             if index is None:
                 index={}
-                for d,_,fs in os.walk(root_):
-                    for f in fs: index.setdefault(f.lower(),os.path.join(d,f))
+                for r_ in roots_:
+                    for d,_,fs in os.walk(r_):
+                        for f in fs: index.setdefault(f.lower(),os.path.join(d,f))
             return index.get(fn.lower())
     parts={}; report=[]
     def load(file,bbox):

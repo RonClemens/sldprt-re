@@ -52,8 +52,10 @@ def main():
     root = a.src
     if os.path.isfile(a.src):
         root = os.path.join(work, 'src'); print('extracted', safe_extract(a.src, root), 'CAD files')
-    os.environ['SLDPRT_CACHE'] = os.path.join(work, 'cache'); os.environ['SLD_SEARCH_ROOT'] = root
-    parts = walk(root, '.sldprt'); asms = walk(root, '.sldasm'); print(len(parts), 'parts,', len(asms), 'assemblies')
+    from virtualcomp import materialize   # parts created inside an assembly live in its VirtualComp/* streams: write them out as ordinary part files
+    vdir = os.path.join(work, 'virtual'); vrep = materialize(root, out=vdir)
+    os.environ['SLDPRT_CACHE'] = os.path.join(work, 'cache'); os.environ['SLD_SEARCH_ROOT'] = os.pathsep.join([root, vdir])
+    parts = walk(root, '.sldprt') + walk(vdir, '.sldprt'); asms = walk(root, '.sldasm'); print(len(parts), 'parts (%d virtual),' % len(vrep['written']), len(asms), 'assemblies')
     from concurrent.futures import ThreadPoolExecutor, as_completed
     rep = dict(parts=[], assemblies=[]); t0 = time.time()
     with ThreadPoolExecutor(max(1, a.jobs)) as ex:
