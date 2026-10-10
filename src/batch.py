@@ -3,7 +3,7 @@
 Parts are converted once, in parallel, into an on-disk cache; assemblies then instance them. A failing part or
 assembly never stops the run; everything is listed in report.json.
 usage: batch.py Hydro_CAD.zip -o out [--jobs N] [--timeout SEC] [--work DIR]"""
-import argparse, json, os, signal, subprocess, sys, tempfile, time, zipfile
+import argparse, json, os, subprocess, sys, tempfile, time, zipfile
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 SCHEMA = os.path.join(HERE, 'sch_13006_s_t.txt')
 def safe_extract(zpath, dest):
@@ -21,18 +21,14 @@ def safe_extract(zpath, dest):
     return n
 def walk(root, ext):
     return sorted(os.path.join(d, f) for d, _, fs in os.walk(root) for f in fs if f.lower().endswith(ext))
-class Timeout(Exception): pass
-def _alarm(*_): raise Timeout()
 def warm(args):
-    path, timeout = args
-    from sldprt2glb import load_part
-    t0 = time.time(); signal.signal(signal.SIGALRM, _alarm); signal.alarm(timeout)
-    try:
-        P, N, I, c, fails = load_part(path, SCHEMA)
-        return dict(file=os.path.basename(path), ok=True, tris=len(I), failed_faces=len(fails), sec=round(time.time() - t0, 1))
-    except Timeout: return dict(file=os.path.basename(path), ok=False, error=f'timeout after {timeout}s')
-    except Exception as e: return dict(file=os.path.basename(path), ok=False, error=repr(e)[:200])
-    finally: signal.alarm(0)
+    path, timeout = args; name = os.path.basename(path)
+    try:    # own process per part: subprocess timeouts kill hangs inside native numpy code, which an in-process alarm cannot
+        r = subprocess.run([sys.executable, '-I', os.path.join(HERE, 'warm.py'), path, SCHEMA], capture_output=True, text=True, timeout=timeout, env=os.environ)
+        out = json.loads(r.stdout.strip().splitlines()[-1]) if r.stdout.strip() else dict(ok=False, error=('crashed: ' + r.stderr[-150:]))
+    except subprocess.TimeoutExpired: out = dict(ok=False, error=f'timeout after {timeout}s')
+    except Exception as e: out = dict(ok=False, error=repr(e)[:200])
+    return dict(file=name, **out)
 def top_level(asms):
     """assemblies not referenced as a child of another assembly"""
     from sldcont import read_streams
@@ -58,11 +54,12 @@ def main():
         root = os.path.join(work, 'src'); print('extracted', safe_extract(a.src, root), 'CAD files')
     os.environ['SLDPRT_CACHE'] = os.path.join(work, 'cache'); os.environ['SLD_SEARCH_ROOT'] = root
     parts = walk(root, '.sldprt'); asms = walk(root, '.sldasm'); print(len(parts), 'parts,', len(asms), 'assemblies')
-    import multiprocessing as mp
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     rep = dict(parts=[], assemblies=[]); t0 = time.time()
-    with mp.Pool(max(1, a.jobs), maxtasksperchild=10) as pool:
-        for i, r in enumerate(pool.imap_unordered(warm, [(p, a.timeout) for p in parts]), 1):
-            rep['parts'].append(r); print(f'[{i}/{len(parts)}]', r['file'], 'ok' if r['ok'] else 'FAILED ' + r['error'], flush=True)
+    with ThreadPoolExecutor(max(1, a.jobs)) as ex:
+        futs = [ex.submit(warm, (p, a.timeout)) for p in sorted(parts, key=os.path.getsize)]
+        for i, f in enumerate(as_completed(futs), 1):
+            r = f.result(); rep['parts'].append(r); print(f'[{i}/{len(parts)}]', r['file'], 'ok' if r['ok'] else 'FAILED ' + r['error'], flush=True)
     def save(): json.dump(rep, open(os.path.join(a.out, 'report.json'), 'w'), indent=1)
     todo = sorted(top_level(asms), key=os.path.getsize)    # smallest first: quick results early, giants last
     def run_asm(asm):
