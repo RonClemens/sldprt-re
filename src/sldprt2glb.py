@@ -31,6 +31,18 @@ def geometry_transmits(streams):
             try: raw=zlib.decompress(sec[24:])
             except Exception: break
             yield name,k,raw; pos+=4+ln;k+=1
+def fallback_transmits(streams):
+    """last resort for parts whose Partition/LocalBodies hold no body (e.g. components imported from STEP): the feature history
+    in *-ResolvedFeatures stores complete body snapshots. Only used when nothing else yields a body with faces."""
+    for name,data in streams.items():
+        if 'ResolvedFeatures' not in name: continue
+        for k,m in enumerate(re.finditer(re.escape(MAGIC),data)):
+            p=m.start()
+            if p+24>len(data): continue
+            cs=struct.unpack_from('<I',data,p+20)[0]
+            try: raw=zlib.decompress(data[p+24:p+24+cs])
+            except Exception: continue
+            if raw[:2]==b'PS': yield name,k,raw
 def is_ole2(path):
     with open(path,'rb') as f: return f.read(4)==b'\xd0\xcf\x11\xe0'
 def _cache_file(path,bbox):
@@ -61,6 +73,13 @@ def _load_part(path,schema,log,bbox):
         except Exception as e: log('skip',name,k,repr(e)); continue
         nf=sum(1 for n in br.N.values() if n['name']=='FACE')
         if nf and (best is None or nf>best[0]): best=(nf,br)
+    if best is None:
+        for name,k,raw in fallback_transmits(st):
+            if b'TRANSMIT FILE (deltas)' in raw[:80]: continue
+            try: br=Brep(raw,schema)
+            except Exception as e: log('skip',name,k,repr(e)); continue
+            nf=sum(1 for n in br.N.values() if n['name']=='FACE')
+            if nf and (best is None or nf>best[0]): best=(nf,br)
     if best is None: raise ValueError('no decodable Parasolid body with faces found')
     best[1].bbox=bbox
     r=build_mesh(best[1],tess.tess_face,log=log)
