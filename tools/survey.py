@@ -34,6 +34,13 @@ def survey_one(args):
                 except Exception as e: out.setdefault('decode_errors', []).append(repr(e)[:150]); continue
                 nf = sum(1 for n in br.N.values() if n['name'] == 'FACE')
                 if nf and (best is None or nf > best[0]): best = (nf, br, m.group().decode() if m else None)
+            if best is None:    # same last resort as the converter: bodies kept in the feature history
+                from sldprt2glb import fallback_transmits
+                for name, k, raw in fallback_transmits(st):
+                    try: br = Brep(raw, SCHEMA)
+                    except Exception: continue
+                    nf = sum(1 for n in br.N.values() if n['name'] == 'FACE')
+                    if nf and (best is None or nf > best[0]): best = (nf, br, None)
             if best is None: out['error'] = 'no decodable Parasolid body'; return out
             nf, br, banner = best; c = collections.Counter(n['name'] for n in br.N.values())
             out.update(schema=banner, faces=nf, surfaces={k: c[k] for k in ('PLANE', 'CYLINDER', 'CONE', 'SPHERE', 'TORUS', 'B_SURFACE', 'BLENDED_EDGE', 'OFFSET_SURF', 'SWEPT_SURF', 'SPUN_SURF') if c[k]},

@@ -1,7 +1,9 @@
-"""Virtual components: parts created inside an assembly have no .SLDPRT file; each is stored as a complete embedded part
+"""Embedded components. (1) Virtual components: parts created inside an assembly have no .SLDPRT file; each is stored as a complete embedded part
 container in a 'VirtualComp/<name>' stream of the assembly that owns it (the text after '^' in the component name).
 Stream name = component name before '^', cut to ~25 characters plus a numeric id when long. `materialize` writes every
-virtual component out as a normal .SLDPRT so the rest of the pipeline needs no special case."""
+virtual component out as a normal .SLDPRT so the rest of the pipeline needs no special case.
+(2) Imported components (STEP files imported into SolidWorks, 'IC~~' paths such as '2584.000_01.stp.SLDPRT'): stored in
+'ImportedComp/<exact file name>' streams, also complete part containers; written out under their own file name."""
 import json, os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from sldcont import read_streams, read_streams_bytes
@@ -35,9 +37,9 @@ def materialize(root, out=None, log=print):
     """write virtual components found under `root` to <root>/__virtual__/<name>.SLDPRT; returns a report dict"""
     out = out or os.path.join(root, '__virtual__'); os.makedirs(out, exist_ok=True)
     asms = sorted(os.path.join(d, f) for d, _, fs in os.walk(root) for f in fs if f.lower().endswith('.sldasm') and '__virtual__' not in d)
-    bbox = {}; streams = []; need = {}                       # streams: (asm stem, stream name, bytes); need: component name -> owning asm files
+    bbox = {}; streams = []; imported = {}; need = {}                       # streams: (asm stem, stream name, bytes); need: component name -> owning asm files
     for a in asms:
-        try: st = read_streams(a, want=lambda n: n.startswith('VirtualComp/') or n == 'swXmlContents/COMPINSTANCETREE')
+        try: st = read_streams(a, want=lambda n: n.startswith(('VirtualComp/', 'ImportedComp/')) or n == 'swXmlContents/COMPINSTANCETREE')
         except Exception as e: log('virtualcomp: cannot read', a, repr(e)[:80]); continue
         stem = os.path.splitext(os.path.basename(a))[0].lower()
         def collect(items, owner_stem, depth=0):
@@ -49,10 +51,17 @@ def materialize(root, out=None, log=print):
                     except Exception: continue
                     collect(inner, name.lower(), depth + 1)
         collect(st, stem)
+        for k, v in st.items():       # imported (STEP) components keep their file name as the stream name
+            if k.startswith('ImportedComp/') and k.upper().endswith('.SLDPRT'): imported.setdefault(k[len('ImportedComp/'):], v)
         for m in re.finditer(r'<swModel [^>]*swName="([^"]*)"[^>]*?swBoundingBox="([^"]*)"', st.get('swXmlContents/COMPINSTANCETREE', b'').decode('utf8', 'replace')):
             bbox[m.group(1)] = [float(x) for x in m.group(2).split()]
         for n in set(NS_VIRTUAL.findall(st.get('swXmlContents/COMPINSTANCETREE', b'').decode('utf8', 'replace'))): need.setdefault(n, set()).add(stem)
-    rep = dict(written=[], unmatched=[], ambiguous=[])
+    rep = dict(written=[], unmatched=[], ambiguous=[], imported=[])
+    for fn, data in sorted(imported.items()):
+        dst = os.path.join(out, fn)
+        if os.path.exists(dst): continue
+        with open(dst, 'wb') as f: f.write(data)
+        rep['imported'].append(fn)
     for name in sorted(need):
         base, owner = (name.split('^', 1) + [''])[:2] if '^' in name else (name, '')
         cand = [(sc, st_, sn, v) for st_, sn, v in streams if (sc := _score(sn, base))]
@@ -66,7 +75,7 @@ def materialize(root, out=None, log=print):
         with open(dst, 'wb') as f: f.write(top[0][3])
         rep['written'].append(name)
     json.dump(rep, open(os.path.join(out, 'index.json'), 'w'), indent=1)
-    log(f"virtual components: {len(rep['written'])} written, {len(rep['unmatched'])} unmatched, {len(rep['ambiguous'])} ambiguous (of {len(need)})")
+    log(f"virtual components: {len(rep['written'])} written, {len(rep['unmatched'])} unmatched, {len(rep['ambiguous'])} ambiguous (of {len(need)}); imported (STEP) components: {len(rep['imported'])}")
     return rep
 if __name__ == '__main__':
     r = materialize(sys.argv[1]); [print(' unmatched:', n) for n in r['unmatched'][:10]]; [print(' ambiguous:', a['name'], a['streams']) for a in r['ambiguous'][:10]]
