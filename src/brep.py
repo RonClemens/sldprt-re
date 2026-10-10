@@ -11,7 +11,12 @@ SWAP=False
 FLIPMODE=2
 class Brep:
     def __init__(s,buf,schema_path='/mnt/user-data/uploads/sch_13006_s_t.txt'):
-        _,base=load_schema(schema_path); g=parse(buf,base); s.g=g; s.N=g['nodes']; N=s.N
+        _,base=load_schema(schema_path)
+        try: g=parse(buf,base)
+        except Exception:    # bodies over 1 MiB are cut off inside the container: keep every node that did decode and mesh what is complete
+            g=parse(buf,base,partial=True)
+            if not g.get('truncated') or len(g['nodes'])<10: raise
+        s.truncated=bool(g.get('truncated')); s.g=g; s.N=g['nodes']; N=s.N
         s.surfs={}
         s.edge_cache={}
     def surf(s,fid):

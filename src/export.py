@@ -8,7 +8,7 @@ def build_mesh(b, tess_face, log=print):
     for n in N.values():
         if n['name']=='ATTRIBUTE' and 'COLOUR' in defs.get(n['definition'],''):
             f=n['fields']; f=f[0] if isinstance(f,list) else f
-            color=tuple(N[f]['values'][:3])
+            if f in N: color=tuple(N[f]['values'][:3])    # (the node can be missing when the body is cut off at 1 MiB)
     faces=[];fails=[]
     for fid,f in sorted(N.items()):
         if f['name']!='FACE': continue
