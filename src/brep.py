@@ -60,8 +60,9 @@ class Brep:
         """3D polyline from start vertex to end vertex of the edge (edge direction)."""
         if eid in s.edge_cache: return s.edge_cache[eid]
         N=s.N; e=N[eid]; A,B,_=s.edge_vertices(eid)
-        cid=e['curve']
-        if cid==1 or N[cid]['name']=='LINE':
+        cid=e['curve']; base=cid
+        while base!=1 and N[base]['name']=='TRIMMED_CURVE': base=N[base]['basis_curve']    # a trimmed straight line is still just its two end points
+        if cid==1 or N[base]['name']=='LINE':
             pts=np.array([A,B]) if A is not None and B is not None else None
             if pts is None: raise ValueError('line edge without vertices')
         else:
