@@ -79,14 +79,14 @@ class BSurf(Surf):
         gu=np.linspace(*s.nb.urange,41); gv=np.linspace(*s.nb.vrange,max(41,s.nb.nv*3))
         U,V=np.meshgrid(gu,gv,indexing='ij'); s.gU=U.ravel(); s.gV=V.ravel()
         s.gP=s.nb.surface(s.gU,s.gV)
+        from scipy.spatial import cKDTree
+        s.tree=cKDTree(s.gP)    # nearest grid point = Newton seed (replaces a brute-force distance matrix)
     def eval(s,u,v):
         u,v=np.broadcast_arrays(np.asarray(u,float),np.asarray(v,float)); sh=u.shape
         return s.nb.surface(u.ravel(),v.ravel()).reshape(sh+(3,))
     def inv(s,P,iters=12):
         P=np.atleast_2d(np.asarray(P,float))
-        k=np.empty(len(P),int)
-        for i0 in range(0,len(P),64):
-            d=((P[i0:i0+64,None,:]-s.gP[None,:,:])**2).sum(-1); k[i0:i0+64]=d.argmin(1)
+        k=s.tree.query(P)[1]
         u=s.gU[k].copy(); v=s.gV[k].copy(); h=1e-6
         (u0,u1),(v0,v1)=s.nb.urange,s.nb.vrange
         for _ in range(iters):

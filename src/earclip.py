@@ -56,16 +56,21 @@ def earclip(P,outer,holes=(),cost=None):
     alive=[True]*m; count=m
     def pt(i): return P[ring[i]]
     def convex(i): return cross(pt(prv[i]),pt(i),pt(nxt[i]))>eps
+    RX=np.array([P[r][0] for r in ring]); RY=np.array([P[r][1] for r in ring]); alive_np=np.ones(m,bool)
     def valid(i):
         a,b,c=prv[i],i,nxt[i]
         pa,pb,pc=pt(a),pt(b),pt(c)
         if cross(pa,pb,pc)<=eps: return False
-        j=nxt[c]
-        while j!=a:
-            pq=pt(j)
-            if pq!=pa and pq!=pb and pq!=pc and pit(pq,pa,pb,pc,-eps): return False
-            j=nxt[j]
-        return True
+        # no other live vertex may lie inside the ear (same arithmetic and order as cross()/pit(), vectorized over all live vertices)
+        px,py=RX,RY
+        ok=alive_np.copy(); ok[[a,b,c]]=False
+        for q in (pa,pb,pc): ok&=~((px==q[0])&(py==q[1]))
+        if not ok.any(): return True
+        px,py=px[ok],py[ok]
+        c1=(pb[0]-pa[0])*(py-pa[1])-(pb[1]-pa[1])*(px-pa[0])
+        c2=(pc[0]-pb[0])*(py-pb[1])-(pc[1]-pb[1])*(px-pb[0])
+        c3=(pa[0]-pc[0])*(py-pc[1])-(pa[1]-pc[1])*(px-pc[0])
+        return not bool(((c1>=eps)&(c2>=eps)&(c3>=eps)).any())
     def score(i):
         return cost(ring[prv[i]],ring[i],ring[nxt[i]]) if cost else 0.0
     sco={}
@@ -84,7 +89,7 @@ def earclip(P,outer,holes=(),cost=None):
         i=min(sco,key=sco.get); del sco[i]
         a,c=prv[i],nxt[i]
         tris.append((ring[a],ring[i],ring[c]))
-        alive[i]=False; count-=1; nxt[a]=c; prv[c]=a
+        alive[i]=False; alive_np[i]=False; count-=1; nxt[a]=c; prv[c]=a
         for k in (a,c):
             sco.pop(k,None)
             if alive[k] and valid(k): sco[k]=score(k)
