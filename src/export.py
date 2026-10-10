@@ -12,10 +12,13 @@ def build_mesh(b, tess_face, log=print):
     faces=[];fails=[]
     for fid,f in sorted(N.items()):
         if f['name']!='FACE': continue
-        try: X,t,info=tess_face(b,fid)
+        try:
+            X,t,info=tess_face(b,fid); t=np.asarray(t,int).reshape(-1,3); X=np.asarray(X,float).reshape(-1,3)
+            if len(t)==0: raise ValueError('no triangles produced')
         except Exception as e: fails.append((fid,repr(e))); continue
         faces.append(dict(fid=fid,X=X,t=np.array(t),sf=b.surf(f['surface']),f=f,mode=info['mode']))
         log('face',fid,N[f['surface']]['name'],info['mode'],'tris',len(t))
+    if not faces: raise ValueError('no face could be tessellated (%d failed; first: %s)'%(len(fails),fails[0][1] if fails else 'none'))
     # ---- consistent orientation: propagate across shared boundary edges (welded at 1 nm)
     key=lambda p:tuple(np.round(np.asarray(p)*1e9).astype(np.int64))
     for fc in faces:
