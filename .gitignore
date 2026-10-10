@@ -1,0 +1,22 @@
+# test-data cache and outputs
+.cache/
+out/
+__pycache__/
+*.pyc
+# Never commit CAD source files or converted models (facility data stays out of this repo)
+*.SLDPRT
+*.sldprt
+*.SLDASM
+*.sldasm
+*.SLDDRW
+*.sldd
+*.zip
+*.glb
+*.gltf
+*.obj
+*.stl
+*.STL
+*.step
+*.stp
+*.x_t
+*.x_b
