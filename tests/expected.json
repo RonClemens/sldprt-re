@@ -1,0 +1,60 @@
+{
+ "ORIGINAL_3_DOF_ARM": {
+  "parts": {
+   "Arm_base": {
+    "tris": 1604,
+    "open": 0,
+    "vol": 45036.2
+   },
+   "Arm_link_tube": {
+    "tris": 1068,
+    "open": 0,
+    "vol": 31273.9
+   },
+   "Arm_brace": {
+    "tris": 1018,
+    "open": 0,
+    "vol": 4389.0
+   }
+  },
+  "mates_validated": 5,
+  "failed_faces": false
+ },
+ "4_WHEELER": {
+  "parts": {
+   "4_WHEELER_CHASSIS": {
+    "tris": 572,
+    "open": 0,
+    "vol": 563202.8
+   },
+   "4_WHEELER_WHEEL": {
+    "tris": 628,
+    "open": 0,
+    "vol": 84590.2
+   }
+  },
+  "mates_validated": 8,
+  "failed_faces": false
+ },
+ "3_DOF_ARM": {
+  "parts": {
+   "3_DOF_ARM_BASE": {
+    "tris": 1568,
+    "open": 0,
+    "vol": 51040.2
+   },
+   "3_DOF_ARM_END_EFFECTOR": {
+    "tris": 2124,
+    "open": 0,
+    "vol": 29051.0
+   },
+   "3_DOF_ARM_SEGMENT": {
+    "tris": 69292,
+    "open": 0,
+    "vol": 132564.3
+   }
+  },
+  "mates_validated": 5,
+  "failed_faces": false
+ }
+}
