@@ -83,9 +83,9 @@ class Server:
                     inst.append(dict(id=len(inst), path=os.path.splitext(os.path.basename(f))[0], part=k, matrix=np.eye(4).reshape(-1).tolist(), bbox=None, hidden=False, suppressed=False))
             j.parts = parts; need = {i['part'] for i in inst if not i['suppressed']}
             todo = sorted((parts[k] for k in need if parts[k]['path']), key=lambda p: p['bytes'])
+            j.emit('plan', name=os.path.splitext(filename)[0], instances=inst, parts=[{k: v for k, v in p.items() if k != 'path'} for p in parts.values()], missing=missing, skipped=getattr(j, 'skipped', []))
             for k in need:
                 if not parts[k]['path']: j.emit('part_failed', key=k, reason='missing_file')
-            j.emit('plan', name=os.path.splitext(filename)[0], instances=inst, parts=[{k: v for k, v in p.items() if k != 'path'} for p in parts.values()], missing=missing, skipped=getattr(j, 'skipped', []))
             counts = dict(ok=0, bad=len(need) - len(todo), total=len(need)); lk = threading.Lock()
             env = dict(os.environ, SLDPRT_CACHE=s.cache)
             os.makedirs(os.path.join(j.dir, 'parts'), exist_ok=True)
