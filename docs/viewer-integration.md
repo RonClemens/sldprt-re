@@ -68,7 +68,7 @@ so `new THREE.Matrix4().fromArray(m)` applies directly.
 
 ### Server behaviour
 
-- Parts are converted in parallel in **separate processes with a hard kill on timeout** (per-part default 120 s, configurable).
+- Parts are converted in parallel in **separate processes with a hard kill on timeout** (per-part default 600 s, configurable with `--timeout`; a part that times out is retried once with `--retry-factor` times that).
   Hangs inside native numpy code cannot be interrupted by an in-process alarm; this was observed on the facility data.
 - Results are cached on disk by file hash (+ bounding box), so re-importing is instant and a cancelled job loses nothing.
 - Order: smallest parts first (fast visible progress); heavy outliers last.
