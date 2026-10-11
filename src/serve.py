@@ -132,7 +132,8 @@ class Server:
         for i in getattr(j, 'inst', []):
             if i['suppressed'] or i['part'] not in j.ready: continue
             if i['part'] not in parts:
-                P, N, I, c, _ = load_part(j.parts[i['part']]['path'], SCHEMA); parts[i['part']] = (P, N, I, c)
+                bb = j.parts[i['part']].get('bbox')    # same recorded-box hint (and so the same cache entry) as the conversion step
+                P, N, I, c, _ = load_part(j.parts[i['part']]['path'], SCHEMA, bbox=tuple(map(tuple, bb)) if bb else None); parts[i['part']] = (P, N, I, c)
             kids.append(dict(name=i['path'].split('/')[-1], matrix=np.array(i['matrix']).reshape(4, 4), part=i['part']))
         out = os.path.join(j.dir, 'assembly.glb'); write_glb_scene(out, parts, dict(name=j.name, children=kids), os.path.splitext(j.name)[0]); return out
 def make_handler(S):
