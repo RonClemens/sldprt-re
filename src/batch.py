@@ -24,6 +24,8 @@ def walk(root, ext):
 def warm(args):
     path, timeout = args; name = os.path.basename(path)
     try:    # own process per part: subprocess timeouts kill hangs inside native numpy code, which an in-process alarm cannot
+        # -E (not -I): -I also drops the user site-packages dir, where a venv-less `pip install
+        # --user numpy scipy` puts them.
         r = subprocess.run([sys.executable, '-E', os.path.join(HERE, 'warm.py'), path, SCHEMA], capture_output=True, text=True, timeout=timeout, env=os.environ)
         out = json.loads(r.stdout.strip().splitlines()[-1]) if r.stdout.strip() else dict(ok=False, error=('crashed: ' + r.stderr[-150:]))
     except subprocess.TimeoutExpired: out = dict(ok=False, error=f'timeout after {timeout}s')

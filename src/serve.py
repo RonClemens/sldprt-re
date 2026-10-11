@@ -195,6 +195,11 @@ class Server:
                 if j.cancel: return
                 out = os.path.join(j.dir, 'parts', p['key'] + '.glb'); j.emit('part_started', key=p['key']); t1 = time.time()
                 try:
+                    # -E (not -I): -I also drops the user site-packages dir, which is where a
+                    # venv-less `pip install --user numpy scipy` (our own Windows setup script)
+                    # puts them -- under -I those imports 404 even though serve.py's own process
+                    # (started without -I) can see them fine. -E alone still ignores every PYTHON*
+                    # env var this subprocess would otherwise inherit.
                     pr = subprocess.Popen([sys.executable, '-E', os.path.join(HERE, 'warm.py'), p['path'], SCHEMA, out, json.dumps(p.get('bbox'))], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
                     j.procs.add(pr)
                     try: so, se = pr.communicate(timeout=timeout or s.a.timeout)
