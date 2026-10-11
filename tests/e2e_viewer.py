@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end check of the progressive import: ipb_viz (with viewer/ipb_viz.patch applied, passed as VIEWER_DIR) + helper in --replay mode.
+"""End-to-end check of the progressive import: an ipb_viz checkout (passed as VIEWER_DIR) + helper in --replay mode.
 usage: e2e_viewer.py VIEWER_DIR REPLAY_JOBDIR OUT_PREFIX [speed]
 Takes screenshots while parts arrive and asserts: boxes appear first, then real geometry replaces them, with stable mesh numbering."""
 import asyncio, os, subprocess, sys, time, tempfile

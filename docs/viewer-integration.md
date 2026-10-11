@@ -114,4 +114,4 @@ so `new THREE.Matrix4().fromArray(m)` applies directly.
   (sidebar + manual options) controls whether the boxes are shown in the 3D view, the B/W diagram and the assembly manual.
 
 - **Desktop first.** Browser and helper on the same machine (`127.0.0.1`), so no tunnel is needed. An optional `--token` (header or `?token=`) is supported. The Android phone is a later viewer-only client (load the exported GLB, or use a tunnel to the desktop helper).
-- **Delivery to ipb_viz:** patch file (`viewer/ipb_viz.patch`); a PR is opened only once the user authorizes it.
+- **Delivery to ipb_viz:** landed via [ipb_viz#1](https://github.com/RonClemens/ipb_viz/pull/1), merged.
