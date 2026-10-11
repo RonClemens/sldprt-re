@@ -15,13 +15,16 @@ def build_mesh(b, tess_face, log=print):
         try:
             X,t,info=tess_face(b,fid); t=np.asarray(t,int).reshape(-1,3); X=np.asarray(X,float).reshape(-1,3)
             if len(t)==0: raise ValueError('no triangles produced')
-            bb=getattr(b,'bbox',None)
-            if bb is not None:    # a face whose triangles leave the part's recorded bounding box was traced wrongly (long way round an arc, ...): drop it rather than draw stray geometry
+            bb=getattr(b,'bbox',None); outside=False
+            if bb is not None:    # a face whose triangles leave the part's recorded bounding box was probably traced wrongly (long way round an arc, ...)
                 lo,hi=np.array(bb[0]),np.array(bb[1]); mg=0.05*(hi-lo)+1e-3
-                if (X.min(0)<lo-mg).any() or (X.max(0)>hi+mg).any(): raise ValueError('outside recorded bounding box')
+                outside=bool((X.min(0)<lo-mg).any() or (X.max(0)>hi+mg).any())
         except Exception as e: fails.append((fid,repr(e))); continue
-        faces.append(dict(fid=fid,X=X,t=np.array(t),sf=b.surf(f['surface']),f=f,mode=info['mode']))
+        faces.append(dict(fid=fid,X=X,t=np.array(t),sf=b.surf(f['surface']),f=f,mode=info['mode'],outside=outside))
         log('face',fid,N[f['surface']]['name'],info['mode'],'tris',len(t))
+    nout=sum(1 for fc in faces if fc['outside'])
+    if nout and nout<=0.5*len(faces):    # most faces agree with the recorded box: drop the few that leave it (stray geometry). If most do not, the box does not describe this part (other configuration, flexible part): keep everything
+        fails.extend((fc['fid'],"ValueError('outside recorded bounding box')") for fc in faces if fc['outside']); faces=[fc for fc in faces if not fc['outside']]
     if not faces: raise ValueError('no face could be tessellated (%d failed; first: %s)'%(len(fails),fails[0][1] if fails else 'none'))
     # ---- consistent orientation: propagate across shared boundary edges (welded at 1 nm)
     key=lambda p:tuple(np.round(np.asarray(p)*1e9).astype(np.int64))
