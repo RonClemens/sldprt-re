@@ -21,6 +21,24 @@ python3 sldasm_mates.py asm.SLDASM --schema sch_13006_s_t.txt -o mates.json
 Assembly conversion expects the referenced part files in the same folder as the `.SLDASM` (matched by file name).
 GLB is in metres, Y-up; OBJ is in millimetres.
 
+## Batch conversion and survey
+
+```bash
+python3 tools/survey.py  Hydro_CAD.zip -o survey.json [--tess]   # report only: versions, surface/curve types, failures
+python3 src/batch.py     Hydro_CAD.zip -o out [--jobs N]         # parts converted once in parallel (disk cache), one GLB per top-level assembly, out/report.json
+```
+
+A failing part or assembly never stops a batch run; parts referenced from an assembly are looked up in its folder, then anywhere in the ZIP by file name.
+
+## Local helper for the web viewer
+
+```bash
+python3 src/serve.py [--port 8765] [--origin https://your-pages-site] [--jobs N] [--timeout SEC]
+```
+
+Listens on 127.0.0.1 only. The viewer posts a `.sldprt`, `.sldasm` or Pack-and-Go `.zip` and follows a Server-Sent Events stream
+(plan with instance boxes first, then each finished part, progress, mates). Design and event format: [docs/viewer-integration.md](docs/viewer-integration.md).
+
 ## Tests
 
 ```bash

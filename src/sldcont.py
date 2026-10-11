@@ -1,8 +1,10 @@
 import struct, zlib, re
 M=bytes.fromhex('140006000800')
 def rol(b,k): return bytes(((c<<k)|(c>>(8-k)))&0xff for c in b) if k else b
-def read_streams(path):
-    d=open(path,'rb').read()
+def read_streams(path,want=None):
+    return read_streams_bytes(open(path,'rb').read(),want)
+def read_streams_bytes(d,want=None):
+    """streams of a SolidWorks container held in memory (also used for the files embedded as VirtualComp/* streams)"""
     key=d[7]&7
     out={}
     for m in re.finditer(re.escape(M), d):
@@ -12,6 +14,7 @@ def read_streams(path):
         nm=rol(d[mp+26:mp+26+nsz],key)
         if any(c<0x20 or c>=0x80 for c in nm): continue
         name=nm.decode()
+        if want and not want(name): continue    # skip inflating streams the caller does not need
         pl=d[mp+26+nsz:mp+26+nsz+csz]
         try: data=zlib.decompress(pl,-15)
         except Exception: continue

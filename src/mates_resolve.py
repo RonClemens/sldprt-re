@@ -1,5 +1,5 @@
 """Resolve decoded mates to world-space geometry and check them against the placed assembly."""
-import os, sys, math
+import os, re, sys, math
 sys.path.insert(0,os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
 from sldcont import read_streams
@@ -25,12 +25,47 @@ def face_index(part_path,schema):
             elif s['name']=='CONE': g.update(point=np.array(s['pvec']),dir=np.array(s['axis']),radius=s['radius'])
             idx.setdefault((vals[1],vals[4] if len(vals)>4 else None),[]).append(g)
     return idx
+def comp_path_raw(c):
+    """first path element of a component string without its '@assembly' part ('Front Plane', 'Pipe-1')"""
+    return c.split('/')[0].split('@')[0]
 def to_world(g,M):
-    R=M[:3,:3]; return dict(g,point=g['point']@R+M[3,:3],dir=g['dir']@R)
+    R=M[:3,:3]
+    if 'point' not in g or 'dir' not in g: return dict(g)    # non-analytic faces (B-spline, ...) carry no axis/plane to place
+    return dict(g,point=g['point']@R+M[3,:3],dir=g['dir']@R)
 def line_dist(p1,d1,p2,d2):
     d1=d1/np.linalg.norm(d1); d2=d2/np.linalg.norm(d2); c=np.cross(d1,d2)
     if np.linalg.norm(c)<1e-9: return np.linalg.norm(np.cross(p2-p1,d1)),0.0
     return abs((p2-p1)@c)/np.linalg.norm(c), math.degrees(math.asin(min(1,np.linalg.norm(c))))
+_PLANES={'Front':(0.,0.,1.),'Top':(0.,1.,0.),'Right':(1.,0.,0.)}      # SolidWorks default origin planes: Front=XY, Top=XZ, Right=YZ (normals in the part frame)
+def origin_plane(component,byname):
+    """'Front Plane@Pipe-1@Assem' -> that plane of component instance Pipe<1>;  'Top Plane@Assem' -> the assembly's own plane (world frame).
+    Returns None when the entity is not a default origin plane. Face dict as the rest of the resolver uses (kind/point/dir in world metres)."""
+    mm=re.match(r'^(Front|Top|Right)( Plane)?@(.+)$',component)
+    if not mm: return None
+    name,rest=mm.group(1),mm.group(3)
+    n=np.array(_PLANES[name])
+    if '@' not in rest: inst=None; M=np.eye(4); owner=rest; missing=False         # assembly-level plane
+    else:
+        owner='/'.join(comp_path(rest)); inst=byname.get(owner); missing=inst is None; M=inst['M'] if inst else np.eye(4)
+    face=dict(kind='PLANE',point=M[3,:3].copy(),dir=n@M[:3,:3],part=(inst or {}).get('part'),origin_plane=name) if not missing else None
+    return dict(instance=owner,inst=inst,missing=missing,face=face)
+def _disambiguate(m):
+    """An id-rep (feature id, index) can match several faces of a part; the first was always taken. When any entity has more than one
+    candidate, try the combinations and keep the one that satisfies the mate -- only if exactly one does (otherwise keep the first and
+    flag m['ambiguous_faces']). m['disambiguated'] marks mates whose faces were chosen by their own constraint (not an independent check)."""
+    import itertools
+    from mates_check import judge
+    ents=[e for e in m['entities'] if e.get('_cands')]
+    if len(m['entities'])!=2 or len(ents)!=2 or all(len(e['_cands'])==1 for e in ents): return
+    if judge(m)[0]=='pass': return                      # the first candidates already hold: nothing to decide
+    ok=[]
+    for combo in itertools.product(*[range(len(e['_cands'])) for e in ents]):
+        trial=dict(m,entities=[dict(e,face=dict(to_world(e['_cands'][i],e['_inst']['M']),part=e['_inst']['part'])) for e,i in zip(ents,combo)])
+        if judge(trial)[0]=='pass': ok.append(combo)
+    if len(ok)==1:
+        for e,i in zip(ents,ok[0]): e['face']=dict(to_world(e['_cands'][i],e['_inst']['M']),part=e['_inst']['part'])
+        m['disambiguated']=True
+    else: m['ambiguous_faces']=len(ok)
 def resolve(sldasm,folder,schema):
     st=read_streams(sldasm)
     files,models,_=parse_tree(st['swXmlContents/COMPINSTANCETREE']); root=find_root(models,os.path.basename(sldasm))
@@ -39,14 +74,23 @@ def resolve(sldasm,folder,schema):
     mates=parse_mates(st[mkey]); cache={}
     def part_faces(part):
         if part not in cache:
-            p=[os.path.join(folder,f) for f in os.listdir(folder) if f.lower()==part.lower()+'.sldprt'][0]; cache[part]=face_index(p,schema)
+            want=part.lower()+'.sldprt'; p=next((os.path.join(folder,f) for f in os.listdir(folder) if f.lower()==want),None)
+            if p is None:    # not beside the assembly: search the extracted tree(s) (ZIP sub-folders, virtual components)
+                for r_ in [r for r in os.environ.get('SLD_SEARCH_ROOT','').split(os.pathsep) if r]:
+                    for d_,_,fs_ in os.walk(r_):
+                        hit=next((f for f in fs_ if f.lower()==want),None)
+                        if hit: p=os.path.join(d_,hit); break
+                    if p: break
+            try: cache[part]=face_index(p,schema) if p else {}    # part file unavailable: its mates stay unresolved instead of aborting the assembly
+            except Exception: cache[part]={}
         return cache[part]
     offs=[m['offset'] for m in mates]+[len(st[mkey])]
     def flat_faces(part): return [g for gs in part_faces(part).values() for g in gs]
     for k,m in enumerate(mates):
         if m['entities'] or m['idreps']: continue
         # binary layout (no component-path / id-rep strings): see mates_bin.py
-        ents=decode_entities(st[mkey],offs[k],offs[k+1],inst,flat_faces,prefer=('CYLINDER','CONE') if m['type']=='concentric' else ('PLANE',))
+        try: ents=decode_entities(st[mkey],offs[k],offs[k+1],inst,flat_faces,prefer=('CYLINDER','CONE') if m['type']=='concentric' else ('PLANE',))
+        except Exception as e: m['entities']=[]; m['layout']='binary'; m['error']=repr(e)[:100]; continue
         for e in ents:
             e['top']=e['instance'].split('/')[0]; e['is_assembly_level']=False
             if e['_face'] is not None: e['face']=to_world(e['_face'],e['_inst']['M']); e['face']['part']=e['_inst']['part']
@@ -55,20 +99,31 @@ def resolve(sldasm,folder,schema):
         if m['type'] in ('distance','angle') : m.setdefault('params',{})['D1']=mate_value(st[mkey],offs[k],offs[k+1])
     for m in mates:
         if m.get('layout')=='binary': continue
-        ents=m['entities']; reps=list(m['idreps'])
-        for e in ents:
-            path='/'.join(comp_path(e['component'])); e['instance']=path; e['top']=comp_path(e['component'])[0]
-            inst_=byname.get(path)
-            e['is_assembly_level']= inst_ is None   # a sub-assembly (its origin planes etc.)
-            e['_inst']=inst_
-        # assign id-reps to entities: first entity (in order) whose part owns a face with those ids
-        used=set()
-        for r in reps:
-            cls,vals=parse_idrep(r); key=(vals[0],vals[1])
-            for k,e in enumerate(ents):
-                if k in used or e['_inst'] is None: continue
-                g=part_faces(e['_inst']['part']).get(key)
-                if g: e['idrep']=r; used.add(k); e['face']=to_world(g[0],e['_inst']['M']); e['face']['part']=e['_inst']['part']; break
+        try:
+            ents=m['entities']; reps=list(m['idreps'])
+            for e in ents:
+                pl=origin_plane(e['component'],byname)
+                if pl is not None:      # an origin plane (Front/Top/Right) of a component or of the assembly itself: fixed geometry, no id-rep
+                    e.update(instance=pl['instance'],top=pl['instance'].split('/')[0],is_assembly_level=pl['inst'] is None,_inst=pl['inst'],_ref=True)
+                    if pl['missing']: e['dangling']=True; m['dangling']=True
+                    else: e['face']=pl['face']
+                    continue
+                path='/'.join(comp_path(e['component'])); e['instance']=path; e['top']=comp_path(e['component'])[0]
+                inst_=byname.get(path)
+                e['is_assembly_level']= inst_ is None   # a sub-assembly (its origin planes etc.)
+                if inst_ is None and re.fullmatch(r'.+-\d+',comp_path_raw(e['component'])): e['dangling']=True; m['dangling']=True    # names a component that is not in the assembly's tree (leftover/replaced): cannot be resolved
+                e['_inst']=inst_
+            # assign id-reps to entities: first entity (in order) whose part owns a face with those ids
+            used=set()
+            for r in reps:
+                try: cls,vals=parse_idrep(r); key=(vals[0],vals[1])
+                except (ValueError,IndexError): m.setdefault('unparsed_idreps',[]).append(r[:60]); continue    # id-rep classes not decoded yet (e.g. moDerivedSurfIdRep_c)
+                for k,e in enumerate(ents):
+                    if k in used or e['_inst'] is None or e.get('_ref'): continue
+                    g=part_faces(e['_inst']['part']).get(key)
+                    if g: e['idrep']=r; used.add(k); e['_cands']=g; e['face']=to_world(g[0],e['_inst']['M']); e['face']['part']=e['_inst']['part']; break
+            _disambiguate(m)
+        except Exception as e: m['entities']=[]; m['error']=repr(e)[:100]    # one odd mate must not abort the whole assembly
     return mates,inst,models,root
 def check(mates):
     rows=[]

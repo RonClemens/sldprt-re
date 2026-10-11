@@ -21,7 +21,7 @@ class Nurbs:
             s.n=n['n_vertices']; P=P.reshape(s.n,vd)
             s.k=s.expand(N[n['knots']]['knots'],N[n['knot_mult']]['mult'])
             s.d=n['degree']; s.periodic=n['periodic']
-            assert not s.periodic, 'periodic nurbs curve'
+            # periodic curves carry the full n+d+1 knot vector (unclamped, uniform) and wrapped control points, so the usual evaluation on [k[d],k[n]] is the whole closed curve
             s.range=(s.k[s.d],s.k[-s.d-1])
         s.P=P; s.vd=vd
     @staticmethod
@@ -79,14 +79,14 @@ class BSurf(Surf):
         gu=np.linspace(*s.nb.urange,41); gv=np.linspace(*s.nb.vrange,max(41,s.nb.nv*3))
         U,V=np.meshgrid(gu,gv,indexing='ij'); s.gU=U.ravel(); s.gV=V.ravel()
         s.gP=s.nb.surface(s.gU,s.gV)
+        from scipy.spatial import cKDTree
+        s.tree=cKDTree(s.gP)    # nearest grid point = Newton seed (replaces a brute-force distance matrix)
     def eval(s,u,v):
         u,v=np.broadcast_arrays(np.asarray(u,float),np.asarray(v,float)); sh=u.shape
         return s.nb.surface(u.ravel(),v.ravel()).reshape(sh+(3,))
     def inv(s,P,iters=12):
         P=np.atleast_2d(np.asarray(P,float))
-        k=np.empty(len(P),int)
-        for i0 in range(0,len(P),64):
-            d=((P[i0:i0+64,None,:]-s.gP[None,:,:])**2).sum(-1); k[i0:i0+64]=d.argmin(1)
+        k=s.tree.query(P)[1]
         u=s.gU[k].copy(); v=s.gV[k].copy(); h=1e-6
         (u0,u1),(v0,v1)=s.nb.urange,s.nb.vrange
         for _ in range(iters):
@@ -119,6 +119,67 @@ class Sphere(Surf):
     def inv(s,P):
         d=np.asarray(P)-s.c; px=d@s.x; py=d@s.y
         return np.stack([np.arctan2(py,px),np.arctan2(d@s.a,np.hypot(px,py))],-1)
+def curve_fn(N,cid):
+    """section / profile curve of a swept or spun surface -> (eval(u)->(m,3), (u0,u1), closed). Unsupported curve types raise NotImplementedError."""
+    n=N[cid]; t=n['name']
+    if t=='TRIMMED_CURVE': return curve_fn(N,n['basis_curve'])
+    if t=='CIRCLE':
+        c=np.array(n['centre']); nz=unit(n['normal']); x=unit(n['x_axis']); y=np.cross(nz,x); r=n['radius']
+        return (lambda u: c+r*(np.cos(np.asarray(u,float))[...,None]*x+np.sin(np.asarray(u,float))[...,None]*y)),(0.0,TWO),True
+    if t=='ELLIPSE':
+        c=np.array(n['centre']); nz=unit(n['normal']); x=unit(n['x_axis']); y=np.cross(nz,x); A=n['major_radius']; B=n['minor_radius']
+        return (lambda u: c+A*np.cos(np.asarray(u,float))[...,None]*x+B*np.sin(np.asarray(u,float))[...,None]*y),(0.0,TWO),True
+    if t=='B_CURVE':
+        nb=Nurbs(N,n['nurbs'],False); closed=bool(getattr(nb,'periodic',False)) or bool(np.allclose(nb.curve(nb.range[0]),nb.curve(nb.range[1]),atol=1e-9))
+        return (lambda u: nb.curve(u)),(float(nb.range[0]),float(nb.range[1])),closed
+    raise NotImplementedError('section curve '+t)
+TWO=2*np.pi
+class Swept(Surf):
+    """extrusion of a section curve along a (unit) sweep direction: P(u,v)=C(u)+v*d"""
+    def __init__(s,N,n):
+        f0,(a0,a1),s.closed=curve_fn(N,n['section']); s.d=unit(n['sweep']); s.periodic_u=s.closed
+        if s.closed:     # a closed section is re-parametrised to one full period (2*pi), so the periodic-surface machinery (unwrap, strips, refinement) applies unchanged
+            s.f=lambda u,f0=f0,a0=a0,k=(a1-a0)/TWO: f0(a0+np.mod(np.asarray(u,float),TWO)*k); s.u0,s.u1=0.0,TWO
+        else: s.f=f0; s.u0,s.u1=a0,a1
+        m=2049 if s.closed else 1025; s.ug=np.linspace(s.u0,s.u1,m,endpoint=not s.closed); s.cp=s.f(s.ug); s.step=(s.u1-s.u0)/m
+        from scipy.spatial import cKDTree
+        s.tree=cKDTree(s.cp-(s.cp@s.d)[:,None]*s.d)    # the section seen along the sweep direction
+        if s.closed: pc=np.vstack([s.cp,s.cp[:1]]); s.r=float(np.linalg.norm(np.diff(pc,axis=0),axis=1).sum()/TWO)    # arc length per radian (= the radius for a circle)
+    def perp(s,u): C=s.f(u); return C-(C@s.d)[...,None]*s.d if np.ndim(C)==1 else C-(C@s.d)[:,None]*s.d
+    def eval(s,u,v):
+        u,v=np.broadcast_arrays(np.asarray(u,float),np.asarray(v,float)); return s.f(u)+v[...,None]*s.d
+    def inv(s,P):
+        P=np.atleast_2d(np.asarray(P,float)); Pp=P-(P@s.d)[:,None]*s.d
+        u=s.ug[s.tree.query(Pp)[1]].copy(); h=max((s.u1-s.u0)*1e-6,1e-12)
+        for _ in range(6):
+            T=(s.perp(u+h)-s.perp(u-h))/(2*h); r=Pp-s.perp(u)
+            u=u+np.clip((r*T).sum(1)/np.maximum((T*T).sum(1),1e-300),-2*s.step,2*s.step)
+            u=(np.mod(u-s.u0,s.u1-s.u0)+s.u0) if s.closed else np.clip(u,s.u0,s.u1)
+        return np.stack([u,(P-s.f(u))@s.d],-1)
+class Spun(Surf):
+    """surface of revolution: the profile curve turned about the axis through `base` (angle u measured from the profile's own position)"""
+    periodic_u=True
+    def __init__(s,N,n):
+        s.f,(s.v0,s.v1),s.pclosed=curve_fn(N,n['profile']); s.b=np.array(n['base']); s.a=unit(n['axis'])
+        x=np.array(n['x_axis']); x=x-(x@s.a)*s.a; s.x=unit(x); s.y=np.cross(s.a,s.x)
+        m=2049 if s.pclosed else 1025; s.vg=np.linspace(s.v0,s.v1,m,endpoint=not s.pclosed); s.step=(s.v1-s.v0)/m
+        rel=s.f(s.vg)-s.b; s.rz=np.stack([np.hypot(rel@s.x,rel@s.y),rel@s.a],-1)
+        from scipy.spatial import cKDTree
+        s.tree=cKDTree(s.rz)
+    def _rzang(s,v):
+        rel=s.f(v)-s.b; px=rel@s.x; py=rel@s.y; return np.hypot(px,py),rel@s.a,np.arctan2(py,px)
+    def eval(s,u,v):
+        u,v=np.broadcast_arrays(np.asarray(u,float),np.asarray(v,float)); r,z,a0=s._rzang(v); a=a0+u
+        return s.b+z[...,None]*s.a+r[...,None]*(np.cos(a)[...,None]*s.x+np.sin(a)[...,None]*s.y)
+    def inv(s,P):
+        P=np.atleast_2d(np.asarray(P,float)); rel=P-s.b; px=rel@s.x; py=rel@s.y; q=np.stack([np.hypot(px,py),rel@s.a],-1)
+        v=s.vg[s.tree.query(q)[1]].copy(); h=max((s.v1-s.v0)*1e-6,1e-12)
+        for _ in range(6):
+            r0,z0,_=s._rzang(v); r1,z1,_=s._rzang(v+h); r2,z2,_=s._rzang(v-h); T=np.stack([r1-r2,z1-z2],-1)/(2*h)
+            d=q-np.stack([r0,z0],-1); v=v+np.clip((d*T).sum(1)/np.maximum((T*T).sum(1),1e-300),-2*s.step,2*s.step)
+            v=(np.mod(v-s.v0,s.v1-s.v0)+s.v0) if s.pclosed else np.clip(v,s.v0,s.v1)
+        _,_,a0=s._rzang(v); u=np.arctan2(py,px)-a0; u=(u+np.pi)%TWO-np.pi
+        return np.stack([u,v],-1)
 class NoEval(Surf):
     """surface type we cannot evaluate (e.g. rolling-ball blend): faces are meshed from their boundary only"""
     def __init__(s,n): s.kind=n['name']
@@ -130,5 +191,7 @@ def make_surface(N,nid):
     if t=='B_SURFACE': return BSurf(N,n)
     if t=='TORUS': return Torus(n)
     if t=='SPHERE': return Sphere(n)
+    if t=='SWEPT_SURF': return Swept(N,n)
+    if t=='SPUN_SURF': return Spun(N,n)
     if t=='BLENDED_EDGE': return NoEval(n)
     raise NotImplementedError(t)

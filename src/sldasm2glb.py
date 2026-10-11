@@ -53,16 +53,27 @@ def main():
     root=[m for m in models.values() if m['file'] and m['file'].lower()==me and m['cfg']==models.get(m['id'])['cfg'] and m['refs']]
     root=root[0] if root else max(models.values(),key=lambda m:len(m['refs']))
     print('root model',root['name'],'cfg',root['cfg'],'refs',len(root['refs']))
+    index=None
     def find(fn):
+        nonlocal index
         for f in os.listdir(folder):
             if f.lower()==fn.lower(): return os.path.join(folder,f)
+        roots_=[r for r in os.environ.get('SLD_SEARCH_ROOT','').split(os.pathsep) if r]    # fallback: same file name anywhere under these trees (ZIPs with sub-folders, extracted virtual components)
+        if roots_:
+            if index is None:
+                index={}
+                for r_ in roots_:
+                    for d,_,fs in os.walk(r_):
+                        for f in fs: index.setdefault(f.lower(),os.path.join(d,f))
+            return index.get(fn.lower())
     parts={}; report=[]
     def load(file,bbox):
         key=file.rsplit('.',1)[0]
         if key not in parts:
             path=find(file)
             if path is None: print('MISSING part file',file); parts[key]=None; return key
-            P,N,I,c,fails=load_part(path,a.schema,bbox=tuple(map(tuple,np.array(bbox).reshape(2,3))) if bbox else None)
+            try: P,N,I,c,fails=load_part(path,a.schema,bbox=tuple(map(tuple,np.array(bbox).reshape(2,3))) if bbox else None)
+            except Exception as e: print('FAILED part file',file,repr(e)[:200]); parts[key]=None; return key
             vol=(P[I[:,0]]*np.cross(P[I[:,1]],P[I[:,2]])).sum()/6
             print(f'  part {key}: {len(P)} verts {len(I)} tris, volume {vol*1e9:.1f} mm3, failed faces {fails}')
             parts[key]=(P,N,I,c)
