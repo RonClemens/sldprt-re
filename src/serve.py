@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Local helper for progressive SolidWorks import (see docs/viewer-integration.md).
-usage: serve.py [--token T] [--replay JOBDIR [--speed X]] [--port 8765] [--origin https://ronclemens.github.io] [--jobs N] [--timeout SEC] [--work DIR]
+usage: serve.py [--token T|auto] [--public-url https://tunnel] [--allow-host H] [--replay JOBDIR [--speed X]] [--port 8765] [--origin https://ronclemens.github.io] [--jobs N] [--timeout SEC] [--work DIR]
 POST /jobs (raw .sldprt/.sldasm/.zip body, header X-Filename) -> {job}; GET /jobs/<id>/events (SSE); GET /jobs/<id>/parts/<key>.glb;
 GET /jobs/<id>/assembly.glb; POST /jobs/<id>/cancel; GET /health. Binds to loopback only."""
 import argparse, hashlib, json, os, re, shutil, subprocess, sys, tempfile, threading, time, uuid
@@ -28,15 +28,86 @@ class Job:
             except OSError: pass
 class Server:
     def __init__(s, a):
-        s.a = a; s.root = a.work or tempfile.mkdtemp(prefix='sldserve_'); os.makedirs(s.root, exist_ok=True)
+        s.a = a; s.root = os.path.abspath(os.path.expanduser(a.work)) if a.work else os.path.join(os.path.expanduser('~'), '.sldprt-re', 'work'); os.makedirs(s.root, exist_ok=True)
         s.cache = os.path.join(s.root, 'cache'); s.jobs = {}; s.lock = threading.Lock()
+        s.updir = os.path.join(s.root, 'uploads'); os.makedirs(s.updir, exist_ok=True); s.uploads = {}
     def start(s, filename, upload_path):
         with s.lock:
             for j in s.jobs.values():       # one job at a time: a new import cancels the previous one
                 if not j.done: s.stop(j)
-        j = Job(s.root, filename); shutil.move(upload_path, os.path.join(j.dir, 'upload' + os.path.splitext(filename)[1].lower()))
+        s.prune(); j = Job(s.root, filename); shutil.move(upload_path, os.path.join(j.dir, 'upload' + os.path.splitext(filename)[1].lower()))
         with s.lock: s.jobs[j.id] = j
         threading.Thread(target=s.run, args=(j, filename), daemon=True).start(); return j
+    # ---- resumable uploads (phone/tunnel path: a dropped connection resumes at the last good byte instead of restarting a 1.4 GB upload)
+    def _up(s, uid):
+        m = s.uploads.get(uid)
+        if m is None:
+            try: m = json.load(open(os.path.join(s.updir, uid + '.json'))); s.uploads[uid] = m      # survives a helper restart
+            except (OSError, ValueError): return None
+        return m
+    def upload_new(s, filename, size):
+        uid = uuid.uuid4().hex[:16]; m = dict(id=uid, name=filename, size=size); s.uploads[uid] = m
+        json.dump(m, open(os.path.join(s.updir, uid + '.json'), 'w')); open(os.path.join(s.updir, uid + '.part'), 'wb').close(); return m
+    def upload_offset(s, uid): return os.path.getsize(os.path.join(s.updir, uid + '.part'))
+    def upload_done(s, uid):
+        m = s._up(uid); part = os.path.join(s.updir, uid + '.part')
+        if s.upload_offset(uid) != m['size']: raise ValueError('incomplete: have %d of %d bytes' % (s.upload_offset(uid), m['size']))
+        j = s.start(m['name'], part); s.uploads.pop(uid, None)
+        try: os.remove(os.path.join(s.updir, uid + '.json'))
+        except OSError: pass
+        return j
+    # ---- import from a URL (e.g. a GitHub release asset): the helper downloads it, the phone never uploads 1.4 GB
+    def url_ok(s, url):
+        from urllib.parse import urlsplit
+        import ipaddress, socket
+        u = urlsplit(url)
+        if u.scheme != 'https' or not u.hostname: return 'only https URLs are accepted'
+        h = u.hostname.lower()
+        if not any(h == a or h.endswith('.' + a) for a in s.a.allow_host): return 'host %s is not allowed (see --allow-host)' % h
+        try:
+            for fam, _, _, _, sa in socket.getaddrinfo(h, u.port or 443):
+                ip = ipaddress.ip_address(sa[0])
+                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved: return 'host resolves to a private address'
+        except OSError as e: return 'cannot resolve host: %s' % e
+        return None
+    def start_url(s, url, filename):
+        with s.lock:
+            for j in s.jobs.values():
+                if not j.done: s.stop(j)
+        s.prune(); j = Job(s.root, filename); j.pending_url = True
+        with s.lock: s.jobs[j.id] = j
+        def go():
+            import urllib.request, urllib.error
+            dest = os.path.join(j.dir, 'download')
+            try:
+                j.emit('download', loaded=0, total=0, url=url)
+                req = urllib.request.Request(url, headers={'User-Agent': 'sldprt-re-helper'})
+                class Guard(urllib.request.HTTPRedirectHandler):      # a GitHub asset URL redirects to a CDN host: every hop must pass the same checks
+                    def redirect_request(self, rq, fp, code, msg, hdrs, newurl):
+                        bad = s.url_ok(newurl) if url.startswith('https') else None
+                        if bad: raise urllib.error.URLError('redirect refused: ' + bad)
+                        return super().redirect_request(rq, fp, code, msg, hdrs, newurl)
+                with urllib.request.build_opener(Guard).open(req, timeout=60) as r, open(dest, 'wb') as f:
+                    total = int(r.headers.get('Content-Length') or 0); got = 0; last = 0.0
+                    while True:
+                        if j.cancel: raise RuntimeError('cancelled')
+                        b = r.read(1 << 20)
+                        if not b: break
+                        f.write(b); got += len(b)
+                        if time.time() - last > 1.0: last = time.time(); j.emit('download', loaded=got, total=total, url=url)
+                j.emit('download', loaded=got, total=total or got, url=url)
+            except Exception as e:
+                j.emit('job_done', ok=False, error='download_failed: ' + str(e)[:150], cancelled=j.cancel, seconds=round(time.time() - j.t0, 1)); j.done = True; return
+            shutil.move(dest, os.path.join(j.dir, 'upload' + os.path.splitext(filename)[1].lower()))
+            s.run(j, filename)
+        threading.Thread(target=go, daemon=True).start(); return j
+    def job_list(s):
+        return [dict(id=j.id, name=j.name, done=j.done, events=len(j.events), started=round(j.t0), parts_ready=len(j.ready)) for j in sorted(s.jobs.values(), key=lambda j: j.t0, reverse=True)]
+    def prune(s, keep=2):
+        """The work dir is persistent now (cache survives restarts), so old jobs must not pile up: each holds the extracted ZIP."""
+        done = sorted((j for j in s.jobs.values() if j.done), key=lambda j: j.t0, reverse=True)
+        for j in done[keep:]:
+            shutil.rmtree(j.dir, ignore_errors=True); s.jobs.pop(j.id, None)
     def start_replay(s):
         """A job whose events and part GLBs come from a recorded job directory (no conversion runs)."""
         with s.lock:
@@ -99,6 +170,7 @@ class Server:
             ext = os.path.splitext(filename)[1].lower(); up = os.path.join(j.dir, 'upload' + ext); src = os.path.join(j.dir, 'src'); os.makedirs(src)
             if ext == '.zip': n = safe_extract(up, src)
             else: shutil.copy(up, os.path.join(src, filename))
+            os.remove(up)    # the extracted copy is all that is needed; a 1.4 GB upload would otherwise stay on disk
             asms = walk(src, '.sldasm'); vrep = dict(written=[], unmatched=[], ambiguous=[])
             if asms:
                 from virtualcomp import materialize   # virtual components are embedded in their assembly: write them out as ordinary parts
@@ -116,20 +188,23 @@ class Server:
             for k in need:
                 if not parts[k]['path']: j.emit('part_failed', key=k, reason='missing_file')
             counts = dict(ok=0, bad=len(need) - len(todo), total=len(need)); lk = threading.Lock()
-            env = dict(os.environ, SLDPRT_CACHE=s.cache)
+            # one numpy thread per worker: N workers x N BLAS threads oversubscribes a laptop and turns slow parts into timeouts
+            env = dict(os.environ, SLDPRT_CACHE=s.cache, OMP_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1', MKL_NUM_THREADS='1'); retry = []
             os.makedirs(os.path.join(j.dir, 'parts'), exist_ok=True)
-            def work(p):
+            def work(p, timeout=None, last=False):
                 if j.cancel: return
                 out = os.path.join(j.dir, 'parts', p['key'] + '.glb'); j.emit('part_started', key=p['key']); t1 = time.time()
                 try:
                     pr = subprocess.Popen([sys.executable, '-I', os.path.join(HERE, 'warm.py'), p['path'], SCHEMA, out, json.dumps(p.get('bbox'))], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
                     j.procs.add(pr)
-                    try: so, se = pr.communicate(timeout=s.a.timeout)
+                    try: so, se = pr.communicate(timeout=timeout or s.a.timeout)
                     except subprocess.TimeoutExpired: pr.kill(); pr.communicate(); res = dict(ok=False, error='timeout')
                     else: res = json.loads(so.strip().splitlines()[-1]) if so.strip() else dict(ok=False, error='crashed: ' + se[-120:])
                     j.procs.discard(pr)
                 except Exception as e: res = dict(ok=False, error='error:' + repr(e)[:100])
                 if j.cancel: return
+                if res.get('error') == 'timeout' and not last:      # slow machine, not a broken part: retried below with more time and less contention
+                    retry.append(p); j.emit('part_retry', key=p['key'], after_s=round(time.time() - t1)); return
                 with lk:
                     if res.get('ok'): counts['ok'] += 1; j.ready[p['key']] = out
                     else: counts['bad'] += 1
@@ -138,6 +213,8 @@ class Server:
                 ready = [i for i in inst if i['part'] in j.ready]
                 j.emit('progress', parts_done=counts['ok'] + counts['bad'], parts_total=counts['total'], instances_ready=len(ready), instances_total=len(inst), elapsed_s=round(time.time() - j.t0, 1))
             with ThreadPoolExecutor(max(1, s.a.jobs)) as ex: list(ex.map(work, todo))
+            if retry and not j.cancel:
+                with ThreadPoolExecutor(max(1, s.a.jobs // 2)) as ex: list(ex.map(lambda p: work(p, s.a.timeout * 5, True), sorted(retry, key=lambda p: p['bytes'])))
             j.inst = inst
             if getattr(j, 'used_asms', None) and not j.cancel:
                 try:
@@ -169,7 +246,7 @@ def make_handler(S):
             if o in S.a.origins or re.match(r'^http://(localhost|127\.0\.0\.1)(:\d+)?$', o):
                 self.send_header('Access-Control-Allow-Origin', o); self.send_header('Vary', 'Origin')
                 self.send_header('Access-Control-Allow-Private-Network', 'true')
-                self.send_header('Access-Control-Allow-Headers', 'X-Filename, Content-Type, Last-Event-ID, Authorization'); self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+                self.send_header('Access-Control-Allow-Headers', 'X-Filename, X-Size, X-Offset, Content-Type, Last-Event-ID, Authorization'); self.send_header('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS')
         def _json(self, code, obj):
             b = json.dumps(obj, default=_np).encode(); self.send_response(code); self._cors(); self.send_header('Content-Type', 'application/json'); self.send_header('Content-Length', str(len(b))); self.end_headers(); self.wfile.write(b)
         def do_OPTIONS(self): self.send_response(204); self._cors(); self.send_header('Content-Length', '0'); self.end_headers()
@@ -189,6 +266,28 @@ def make_handler(S):
                     b = self.rfile.read(min(n, 1 << 20)); n -= len(b)
                     if not b: break
                 return self._json(200, dict(job=S.start_replay().id))
+            if self.path == '/uploads':
+                fn = os.path.basename(self.headers.get('X-Filename', 'upload.zip')); ext = os.path.splitext(fn)[1].lower()
+                if ext not in ('.zip', '.sldprt', '.sldasm'): return self._json(400, dict(error='unsupported file type ' + ext))
+                try: size = int(self.headers.get('X-Size', ''))
+                except ValueError: return self._json(400, dict(error='X-Size required'))
+                m = S.upload_new(fn, size); return self._json(200, dict(upload=m['id'], offset=0, chunk=32 << 20))
+            m = re.match(r'^/uploads/(\w+)/complete$', self.path)
+            if m:
+                if not S._up(m.group(1)): return self._json(404, dict(error='unknown upload'))
+                try: return self._json(200, dict(job=S.upload_done(m.group(1)).id))
+                except ValueError as e: return self._json(409, dict(error=str(e), offset=S.upload_offset(m.group(1))))
+            if self.path == '/jobs' and 'json' in self.headers.get('Content-Type', ''):
+                n = int(self.headers.get('Content-Length', 0))
+                try: body = json.loads(self.rfile.read(n) or b'{}')
+                except ValueError: return self._json(400, dict(error='bad json'))
+                url = body.get('url', '')
+                if not S.a.token: return self._json(403, dict(error='import from URL needs --token (the helper must not fetch URLs for unauthenticated callers)'))
+                bad = S.url_ok(url)
+                if bad: return self._json(400, dict(error=bad))
+                fn = os.path.basename(url.split('?')[0]) or 'download.zip'; ext = os.path.splitext(fn)[1].lower()
+                if ext not in ('.zip', '.sldprt', '.sldasm'): return self._json(400, dict(error='unsupported file type ' + ext))
+                return self._json(200, dict(job=S.start_url(url, fn).id))
             if self.path == '/jobs':
                 fn = os.path.basename(self.headers.get('X-Filename', 'upload.zip')); ext = os.path.splitext(fn)[1].lower()
                 if ext not in ('.zip', '.sldprt', '.sldasm'): return self._json(400, dict(error='unsupported file type ' + ext))
@@ -203,10 +302,31 @@ def make_handler(S):
             m = re.match(r'^/jobs/(\w+)/cancel$', self.path)
             if m and m.group(1) in S.jobs: S.stop(S.jobs[m.group(1)]); return self._json(200, dict(ok=True))
             self._json(404, dict(error='not found'))
+        def do_PUT(self):
+            if not self._auth(): return
+            m = re.match(r'^/uploads/(\w+)$', self.path.split('?')[0]); meta = S._up(m.group(1)) if m else None
+            if not meta: return self._json(404, dict(error='unknown upload'))
+            have = S.upload_offset(meta['id']); off = int(self.headers.get('X-Offset', -1)); n = int(self.headers.get('Content-Length', 0))
+            if off != have or have + n > meta['size']:    # the client resumes from the offset we report
+                while n > 0:
+                    b = self.rfile.read(min(n, 1 << 20)); n -= len(b)
+                    if not b: break
+                return self._json(409, dict(error='offset mismatch', offset=have))
+            with open(os.path.join(S.updir, meta['id'] + '.part'), 'ab') as f:
+                while n > 0:
+                    b = self.rfile.read(min(n, 1 << 20))
+                    if not b: break
+                    f.write(b); n -= len(b)
+            self._json(200, dict(offset=S.upload_offset(meta['id'])))
         def do_GET(self):
             if self.path.split('?')[0] == '/health': return self._json(200, dict(ok=True, version=VERSION, auth=bool(S.a.token), replay=bool(S.a.replay)))
             if not self._auth(): return
             self.path = self.path.split('?')[0]
+            if self.path == '/jobs': return self._json(200, dict(jobs=S.job_list()))
+            m = re.match(r'^/uploads/(\w+)$', self.path)
+            if m:
+                u = S._up(m.group(1))
+                return self._json(200, dict(offset=S.upload_offset(u['id']), size=u['size'])) if u else self._json(404, dict(error='unknown upload'))
             m = re.match(r'^/jobs/(\w+)/(events|assembly\.glb|parts/([\w.-]+)\.glb)$', self.path)
             j = S.jobs.get(m.group(1)) if m else None
             if not j: return self._json(404, dict(error='not found'))
@@ -232,12 +352,22 @@ def make_handler(S):
     return H
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument('--port', type=int, default=8765); ap.add_argument('--origin', action='append', default=['https://ronclemens.github.io'])
-    ap.add_argument('--jobs', type=int, default=max(1, (os.cpu_count() or 2) - 1)); ap.add_argument('--timeout', type=int, default=120); ap.add_argument('--work')
+    ap.add_argument('--jobs', type=int, default=max(1, (os.cpu_count() or 2) - 1)); ap.add_argument('--timeout', type=int, default=120, help='per-part seconds; a part that times out is retried once with 5x this and half the parallelism'); ap.add_argument('--work', help='work dir (cache, jobs). Default: ~/.sldprt-re/work, so the conversion cache survives restarts')
     ap.add_argument('--token', default=os.environ.get('SLD_TOKEN'), help='require this bearer token (header, or ?token= for EventSource)')
     ap.add_argument('--replay', metavar='JOBDIR', help='serve a recorded job dir (events.jsonl + parts/) instead of converting'); ap.add_argument('--speed', type=float, default=1.0)
-    a = ap.parse_args(); a.origins = set(a.origin); S = Server(a)
+    ap.add_argument('--allow-host', action='append', default=['github.com', 'githubusercontent.com'], help='hosts the helper may download from (import by URL); subdomains included')
+    ap.add_argument('--public-url', help='the https URL of the tunnel to this helper; prints a ready-to-open ipb_viz link for the phone')
+    ap.add_argument('--viewer', default='https://ronclemens.github.io/ipb_viz/')
+    a = ap.parse_args(); a.origins = set(a.origin)
+    if a.token == 'auto': import secrets; a.token = secrets.token_urlsafe(18)
+    S = Server(a)
     srv = ThreadingHTTPServer(('127.0.0.1', a.port), make_handler(S)); srv.daemon_threads = True
     print(f'sldprt-re helper {VERSION} on http://127.0.0.1:{a.port}  (work dir {S.root}, allowed origins {sorted(a.origins)})', flush=True)
+    if a.public_url:
+        if not a.token: print('warning: --public-url without --token: anyone with the URL can use this helper. Use --token auto.', flush=True)
+        from urllib.parse import quote
+        print('open on the phone: %s?sldhelper=%s%s' % (a.viewer, quote(a.public_url.rstrip('/'), safe=''), '&sldtoken=' + a.token if a.token else ''), flush=True)
+    elif a.token: print('token: ' + a.token, flush=True)
     try: srv.serve_forever()
     except KeyboardInterrupt: pass
 if __name__ == '__main__': main()
