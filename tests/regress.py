@@ -9,7 +9,7 @@ from glbstat import load, mstats
 CACHE = os.path.join(ROOT, '.cache', 'solidworks_urdf_exporter')
 ASSEMBLIES = ['ORIGINAL_3_DOF_ARM/ORIGINAL_3_DOF_ARM', '4_WHEELER/4_WHEELER', '3_DOF_ARM/3_DOF_ARM']
 SCHEMA = os.path.join(SRC, 'sch_13006_s_t.txt')
-def run(*a): return subprocess.run([sys.executable, '-I', *a], capture_output=True, text=True, cwd=SRC)
+def run(*a): return subprocess.run([sys.executable, '-E', *a], capture_output=True, text=True, cwd=SRC)
 def main():
     if not os.path.isdir(CACHE):
         subprocess.check_call(['git', 'clone', '-q', '--depth', '1', 'https://github.com/ros/solidworks_urdf_exporter.git', CACHE])
