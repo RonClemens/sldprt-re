@@ -29,3 +29,10 @@ A job directory is recorded automatically (`events.jsonl` + `parts/`) every time
 ## Phone / tunnel
 
 See `docs/phone-access.md`. `tests/test_phone.py` covers the helper endpoints and the JS client's resume logic (needs Node 18+).
+
+## Work directory, timeouts, cache
+
+By default the helper keeps its cache and the last jobs in `~/.sldprt-re/work` (override with `--work DIR`), so a restart does not
+start from a cold cache. Only the newest two jobs are kept (each holds the extracted ZIP). A part that exceeds `--timeout` (default 120 s)
+is not reported as failed straight away: it emits `part_retry` and is retried once with 5x the time and half the parallelism. Each
+worker is limited to one numpy thread. Every job writes `events.jsonl` in its folder; `grep part_failed events.jsonl` lists what failed and why.

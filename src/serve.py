@@ -28,14 +28,14 @@ class Job:
             except OSError: pass
 class Server:
     def __init__(s, a):
-        s.a = a; s.root = a.work or tempfile.mkdtemp(prefix='sldserve_'); os.makedirs(s.root, exist_ok=True)
+        s.a = a; s.root = os.path.abspath(os.path.expanduser(a.work)) if a.work else os.path.join(os.path.expanduser('~'), '.sldprt-re', 'work'); os.makedirs(s.root, exist_ok=True)
         s.cache = os.path.join(s.root, 'cache'); s.jobs = {}; s.lock = threading.Lock()
         s.updir = os.path.join(s.root, 'uploads'); os.makedirs(s.updir, exist_ok=True); s.uploads = {}
     def start(s, filename, upload_path):
         with s.lock:
             for j in s.jobs.values():       # one job at a time: a new import cancels the previous one
                 if not j.done: s.stop(j)
-        j = Job(s.root, filename); shutil.move(upload_path, os.path.join(j.dir, 'upload' + os.path.splitext(filename)[1].lower()))
+        s.prune(); j = Job(s.root, filename); shutil.move(upload_path, os.path.join(j.dir, 'upload' + os.path.splitext(filename)[1].lower()))
         with s.lock: s.jobs[j.id] = j
         threading.Thread(target=s.run, args=(j, filename), daemon=True).start(); return j
     # ---- resumable uploads (phone/tunnel path: a dropped connection resumes at the last good byte instead of restarting a 1.4 GB upload)
@@ -74,7 +74,7 @@ class Server:
         with s.lock:
             for j in s.jobs.values():
                 if not j.done: s.stop(j)
-        j = Job(s.root, filename); j.pending_url = True
+        s.prune(); j = Job(s.root, filename); j.pending_url = True
         with s.lock: s.jobs[j.id] = j
         def go():
             import urllib.request, urllib.error
@@ -103,6 +103,11 @@ class Server:
         threading.Thread(target=go, daemon=True).start(); return j
     def job_list(s):
         return [dict(id=j.id, name=j.name, done=j.done, events=len(j.events), started=round(j.t0), parts_ready=len(j.ready)) for j in sorted(s.jobs.values(), key=lambda j: j.t0, reverse=True)]
+    def prune(s, keep=2):
+        """The work dir is persistent now (cache survives restarts), so old jobs must not pile up: each holds the extracted ZIP."""
+        done = sorted((j for j in s.jobs.values() if j.done), key=lambda j: j.t0, reverse=True)
+        for j in done[keep:]:
+            shutil.rmtree(j.dir, ignore_errors=True); s.jobs.pop(j.id, None)
     def start_replay(s):
         """A job whose events and part GLBs come from a recorded job directory (no conversion runs)."""
         with s.lock:
@@ -165,6 +170,7 @@ class Server:
             ext = os.path.splitext(filename)[1].lower(); up = os.path.join(j.dir, 'upload' + ext); src = os.path.join(j.dir, 'src'); os.makedirs(src)
             if ext == '.zip': n = safe_extract(up, src)
             else: shutil.copy(up, os.path.join(src, filename))
+            os.remove(up)    # the extracted copy is all that is needed; a 1.4 GB upload would otherwise stay on disk
             asms = walk(src, '.sldasm'); vrep = dict(written=[], unmatched=[], ambiguous=[])
             if asms:
                 from virtualcomp import materialize   # virtual components are embedded in their assembly: write them out as ordinary parts
@@ -182,20 +188,23 @@ class Server:
             for k in need:
                 if not parts[k]['path']: j.emit('part_failed', key=k, reason='missing_file')
             counts = dict(ok=0, bad=len(need) - len(todo), total=len(need)); lk = threading.Lock()
-            env = dict(os.environ, SLDPRT_CACHE=s.cache)
+            # one numpy thread per worker: N workers x N BLAS threads oversubscribes a laptop and turns slow parts into timeouts
+            env = dict(os.environ, SLDPRT_CACHE=s.cache, OMP_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1', MKL_NUM_THREADS='1'); retry = []
             os.makedirs(os.path.join(j.dir, 'parts'), exist_ok=True)
-            def work(p):
+            def work(p, timeout=None, last=False):
                 if j.cancel: return
                 out = os.path.join(j.dir, 'parts', p['key'] + '.glb'); j.emit('part_started', key=p['key']); t1 = time.time()
                 try:
                     pr = subprocess.Popen([sys.executable, '-I', os.path.join(HERE, 'warm.py'), p['path'], SCHEMA, out, json.dumps(p.get('bbox'))], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
                     j.procs.add(pr)
-                    try: so, se = pr.communicate(timeout=s.a.timeout)
+                    try: so, se = pr.communicate(timeout=timeout or s.a.timeout)
                     except subprocess.TimeoutExpired: pr.kill(); pr.communicate(); res = dict(ok=False, error='timeout')
                     else: res = json.loads(so.strip().splitlines()[-1]) if so.strip() else dict(ok=False, error='crashed: ' + se[-120:])
                     j.procs.discard(pr)
                 except Exception as e: res = dict(ok=False, error='error:' + repr(e)[:100])
                 if j.cancel: return
+                if res.get('error') == 'timeout' and not last:      # slow machine, not a broken part: retried below with more time and less contention
+                    retry.append(p); j.emit('part_retry', key=p['key'], after_s=round(time.time() - t1)); return
                 with lk:
                     if res.get('ok'): counts['ok'] += 1; j.ready[p['key']] = out
                     else: counts['bad'] += 1
@@ -204,6 +213,8 @@ class Server:
                 ready = [i for i in inst if i['part'] in j.ready]
                 j.emit('progress', parts_done=counts['ok'] + counts['bad'], parts_total=counts['total'], instances_ready=len(ready), instances_total=len(inst), elapsed_s=round(time.time() - j.t0, 1))
             with ThreadPoolExecutor(max(1, s.a.jobs)) as ex: list(ex.map(work, todo))
+            if retry and not j.cancel:
+                with ThreadPoolExecutor(max(1, s.a.jobs // 2)) as ex: list(ex.map(lambda p: work(p, s.a.timeout * 5, True), sorted(retry, key=lambda p: p['bytes'])))
             j.inst = inst
             if getattr(j, 'used_asms', None) and not j.cancel:
                 try:
@@ -341,7 +352,7 @@ def make_handler(S):
     return H
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument('--port', type=int, default=8765); ap.add_argument('--origin', action='append', default=['https://ronclemens.github.io'])
-    ap.add_argument('--jobs', type=int, default=max(1, (os.cpu_count() or 2) - 1)); ap.add_argument('--timeout', type=int, default=120); ap.add_argument('--work')
+    ap.add_argument('--jobs', type=int, default=max(1, (os.cpu_count() or 2) - 1)); ap.add_argument('--timeout', type=int, default=120, help='per-part seconds; a part that times out is retried once with 5x this and half the parallelism'); ap.add_argument('--work', help='work dir (cache, jobs). Default: ~/.sldprt-re/work, so the conversion cache survives restarts')
     ap.add_argument('--token', default=os.environ.get('SLD_TOKEN'), help='require this bearer token (header, or ?token= for EventSource)')
     ap.add_argument('--replay', metavar='JOBDIR', help='serve a recorded job dir (events.jsonl + parts/) instead of converting'); ap.add_argument('--speed', type=float, default=1.0)
     ap.add_argument('--allow-host', action='append', default=['github.com', 'githubusercontent.com'], help='hosts the helper may download from (import by URL); subdomains included')
