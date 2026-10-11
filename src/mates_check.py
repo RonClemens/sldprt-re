@@ -5,6 +5,7 @@ def unit(v): return v / np.linalg.norm(v)
 def judge(m, tol_mm=0.05, tol_deg=0.05):
     """-> (status, detail); status in pass / fail / unchecked / undecoded"""
     ents = m.get('entities') or []; f = [e.get('face') for e in ents]
+    if m.get('dangling'): return 'dangling', 'refers to a component that is not in the assembly'
     if len(f) != 2 or not all(f): return 'undecoded', f'{len(f)} entities, faces {sum(1 for x in f if x)}'
     if not all('point' in x and 'dir' in x for x in f): return 'unchecked', 'non-analytic face'
     t = m['type']; a, b = f; d1, d2 = unit(a['dir']), unit(b['dir']); ang = math.degrees(math.acos(min(1, abs(float(d1 @ d2)))))

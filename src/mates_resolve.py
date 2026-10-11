@@ -1,5 +1,5 @@
 """Resolve decoded mates to world-space geometry and check them against the placed assembly."""
-import os, sys, math
+import os, re, sys, math
 sys.path.insert(0,os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
 from sldcont import read_streams
@@ -25,6 +25,9 @@ def face_index(part_path,schema):
             elif s['name']=='CONE': g.update(point=np.array(s['pvec']),dir=np.array(s['axis']),radius=s['radius'])
             idx.setdefault((vals[1],vals[4] if len(vals)>4 else None),[]).append(g)
     return idx
+def comp_path_raw(c):
+    """first path element of a component string without its '@assembly' part ('Front Plane', 'Pipe-1')"""
+    return c.split('/')[0].split('@')[0]
 def to_world(g,M):
     R=M[:3,:3]
     if 'point' not in g or 'dir' not in g: return dict(g)    # non-analytic faces (B-spline, ...) carry no axis/plane to place
@@ -89,6 +92,7 @@ def resolve(sldasm,folder,schema):
                 path='/'.join(comp_path(e['component'])); e['instance']=path; e['top']=comp_path(e['component'])[0]
                 inst_=byname.get(path)
                 e['is_assembly_level']= inst_ is None   # a sub-assembly (its origin planes etc.)
+                if inst_ is None and re.fullmatch(r'.+-\d+',comp_path_raw(e['component'])): e['dangling']=True; m['dangling']=True    # names a component that is not in the assembly's tree (leftover/replaced): cannot be resolved
                 e['_inst']=inst_
             # assign id-reps to entities: first entity (in order) whose part owns a face with those ids
             used=set()
