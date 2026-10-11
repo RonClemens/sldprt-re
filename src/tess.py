@@ -286,14 +286,17 @@ def tess_face(b,fid):
             else: X,t=_polygon_faces(l2,loops3)
     else:
         per=getattr(sf,'periodic_u',False)
-        if kind=='Cylinder':
+        if kind in ('Cylinder','Swept','Spun'):
             uvs=[sf.inv(L) for L in loops3]; ws=[unwrap1(u[:,0])[1] for u in uvs]
+            if kind=='Spun' and any(abs(w)==1 for w in ws) and not (len(loops3)==2 and all(abs(w)==1 for w in ws)):
+                info['mode']='axis'; l2=[np.stack([(L-sf.b)@sf.x,(L-sf.b)@sf.y],-1) for L in loops3]      # a loop around the pole of a dome: flatten along the axis
+                X,t=_polygon_faces(l2,loops3); info['n']=len(t); return X,t,info
             if len(loops3)==2 and all(abs(w)==1 for w in ws):
                 info['mode']='strip'; uu=[unwrap_loop(u)[0] for u in uvs]
                 X,t=_zip(*_strip(uu,loops3,ws))
                 info['n']=len(t); return X,t,info
             wi=[k for k,w in enumerate(ws) if abs(w)==1]
-            if len(wi)==2 and len(loops3)>2 and all(ws[k]==0 for k in range(len(ws)) if k not in wi):
+            if kind in ('Cylinder','Swept') and getattr(sf,'periodic_u',False) and len(wi)==2 and len(loops3)>2 and all(ws[k]==0 for k in range(len(ws)) if k not in wi):
                 # tube wall with cross holes: cut the strip at a seam clear of the holes, then ear-clip with holes
                 X,t=_strip_with_holes(sf,[uvs[k] for k in wi],[loops3[k] for k in wi],[ws[k] for k in wi],
                                       [uvs[k] for k in range(len(uvs)) if k not in wi],[loops3[k] for k in range(len(uvs)) if k not in wi])
