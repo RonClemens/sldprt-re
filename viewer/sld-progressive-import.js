@@ -5,9 +5,10 @@ import { SldHelperClient } from './sld-helper-client.js';
 /** hooks: { showGroup(group)  -> host replaces its current model with this group (and numbers meshes/fits the camera);
  *           onStatus(text, kind), onPanel(state) -> progress UI, refreshPart(mesh) -> called after a mesh's geometry/material was swapped }
  *  Returns {cancel(), keepPartial(), setShowUnresolved(bool), done: Promise} */
-export function startProgressiveImport({ THREE, GLTFLoader, file, base, token, hooks, concurrency = 4 }) {
+export function startProgressiveImport({ THREE, GLTFLoader, file, url, job: attachJob, resumable, base, token, hooks, concurrency = 4 }) {
+  // exactly one source: `file` (upload), `url` (helper downloads it, e.g. a release asset) or `job` (attach to a job another device started)
   const client = new SldHelperClient({ base, token }); const loader = new GLTFLoader();
-  const st = { phase: 'upload', loaded: 0, total: file.size, partsDone: 0, partsTotal: 0, ready: 0, instTotal: 0, failed: [], elapsed: 0, stalled: 0, cancelled: false, finished: false };
+  const st = { phase: 'upload', loaded: 0, total: file ? file.size : 0, partsDone: 0, partsTotal: 0, ready: 0, instTotal: 0, failed: [], elapsed: 0, stalled: 0, cancelled: false, finished: false };
   const panel = () => hooks.onPanel && hooks.onPanel({ ...st, failed: st.failed.slice() });
   const byPart = new Map();            // part key -> [mesh]
   const partState = new Map();         // part key -> 'pending' | 'done' | 'failed'
@@ -20,7 +21,7 @@ export function startProgressiveImport({ THREE, GLTFLoader, file, base, token, h
 
   function onPlan(p) {
     st.phase = 'convert'; st.instTotal = p.instances.length; st.partsTotal = 0;
-    group = new THREE.Group(); group.name = p.name || file.name;
+    group = new THREE.Group(); group.name = p.name || (file && file.name) || 'import';
     const unit = new THREE.BoxGeometry(1, 1, 1); const sharedBox = boxMat();
     for (const inst of p.instances) {
       if (inst.suppressed) continue;                                  // suppressed instances are not drawn by SolidWorks either; ids stay stable because we skip, not renumber
@@ -66,10 +67,15 @@ export function startProgressiveImport({ THREE, GLTFLoader, file, base, token, h
     (async () => {
       try {
         try { await client.health(); } catch (e) { throw Object.assign(new Error('helper_unreachable'), { code: 'helper_unreachable' }); }
-        panel(); hooks.onStatus && hooks.onStatus(`Uploading ${file.name}…`, 'busy');
-        ({ job } = await client.upload(file, { onProgress: (l, t) => { st.loaded = l; st.total = t; panel(); } }));
+        panel(); const prog = (l, t) => { st.loaded = l; st.total = t; panel(); };
+        if (attachJob) job = attachJob;
+        else if (url) { st.phase = 'download'; panel(); ({ job } = await client.importFromUrl(url)); }
+        else {
+          const loopback = /^https?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/.test(client.base);
+          ({ job } = await (resumable ?? !loopback ? client.uploadResumable(file, { onProgress: prog }) : client.upload(file, { onProgress: prog })));   // tunnels cap request size and drop: chunk + resume
+        }
         close = client.events(job, {
-          plan: onPlan, part_done: onPartDone, part_failed: (d) => markFailed(d.key, d.reason),
+          download: (d) => { st.phase = 'download'; st.loaded = d.loaded; st.total = d.total; panel(); }, plan: onPlan, part_done: onPartDone, part_failed: (d) => markFailed(d.key, d.reason),
           progress: (d) => { st.elapsed = d.elapsed_s; st.partsDone = d.parts_done; st.partsTotal = d.parts_total; st.ready = d.instances_ready; st.stalled = 0; panel(); },
           stalled: (s) => { st.stalled = s; panel(); }, mates: (d) => hooks.onMates && hooks.onMates(d),
           job_done: (d) => { st.finished = true; st.phase = d.cancelled ? 'cancelled' : 'done'; st.elapsed = d.seconds; panel(); resolve({ job, ...d }); },

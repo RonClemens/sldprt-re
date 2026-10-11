@@ -21,11 +21,37 @@ export class SldHelperClient {
       x.send(file);
     });
   }
-  /** Subscribes to a job's events. handlers: {plan, part_started, part_done, part_failed, progress, mates, job_done, stalled(sec), error}.
+  /** Resumable chunked upload for flaky links (phone over a tunnel). Each chunk is retried from the offset the helper reports,
+   *  so a dropped connection costs at most one chunk. onProgress(loaded, total). Returns {job}. */
+  async uploadResumable(file, { onProgress, signal, chunk = 32 << 20, retries = 8 } = {}) {
+    const j = async (r) => { const b = await r.json().catch(() => ({})); if (!r.ok && r.status !== 409) throw new Error(b.error || 'HTTP ' + r.status); return { status: r.status, ...b }; };
+    const start = await j(await fetch(this.base + '/uploads', { method: 'POST', headers: this._h({ 'X-Filename': file.name, 'X-Size': String(file.size) }), signal }));
+    const id = start.upload; let off = start.offset; chunk = Math.min(chunk, start.chunk || chunk); let fails = 0;
+    while (off < file.size) {
+      if (signal && signal.aborted) throw new DOMException('aborted', 'AbortError');
+      try {
+        const r = await j(await fetch(`${this.base}/uploads/${id}`, { method: 'PUT', headers: this._h({ 'X-Offset': String(off) }), body: file.slice(off, off + chunk), signal }));
+        off = r.offset; fails = 0; onProgress && onProgress(off, file.size);
+      } catch (e) {
+        if (e.name === 'AbortError' || ++fails > retries) throw e;
+        await new Promise((ok) => setTimeout(ok, Math.min(30000, 1000 * 2 ** fails)));
+        try { off = (await j(await fetch(`${this.base}/uploads/${id}`, { headers: this._h(), signal }))).offset; } catch (_) {}   // ask where we are, then continue
+      }
+    }
+    return j(await fetch(`${this.base}/uploads/${id}/complete`, { method: 'POST', headers: this._h(), signal }));
+  }
+  /** Asks the helper to download a file itself (needs a token on the helper; https hosts on its allow-list, e.g. a GitHub release asset). Returns {job}. */
+  async importFromUrl(url) {
+    const r = await fetch(this.base + '/jobs', { method: 'POST', headers: this._h({ 'Content-Type': 'application/json' }), body: JSON.stringify({ url }) });
+    const b = await r.json().catch(() => ({})); if (!r.ok) throw new Error(b.error || 'HTTP ' + r.status); return b;
+  }
+  /** Jobs the helper knows about (newest first), so a second device can attach to one that another device started. */
+  async listJobs() { const r = await fetch(this.base + '/jobs', { headers: this._h() }); return (await r.json()).jobs; }
+  /** Subscribes to a job's events. handlers: {download({loaded,total}), plan, part_started, part_done, part_failed, progress, mates, job_done, stalled(sec), error}.
    *  Returns close(). EventSource reconnects by itself and resumes through Last-Event-ID. */
   events(job, handlers, { stallAfterMs = 30000 } = {}) {
     const es = new EventSource(this._q(`${this.base}/jobs/${job}/events`)); let last = Date.now(), closed = false;
-    const names = ['plan', 'part_started', 'part_done', 'part_failed', 'progress', 'mates', 'mates_unavailable', 'job_done'];
+    const names = ['download', 'plan', 'part_started', 'part_done', 'part_failed', 'progress', 'mates', 'mates_unavailable', 'job_done'];
     for (const n of names) es.addEventListener(n, (e) => { last = Date.now(); const d = JSON.parse(e.data); handlers[n] && handlers[n](d); if (n === 'job_done') close(); });
     es.onerror = () => { if (!closed && handlers.error) handlers.error(new Error('event stream interrupted')); };
     const t = setInterval(() => { const s = (Date.now() - last) / 1000; if (!closed && s * 1000 > stallAfterMs && handlers.stalled) handlers.stalled(Math.round(s)); }, 5000);
