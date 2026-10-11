@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A part that exceeds --timeout must be retried (5x time, no part_failed first), and old jobs must be pruned. usage: python3 tests/test_retry.py"""
+"""A part that exceeds --timeout must be retried (retry-factor x time, no part_failed first), and old jobs must be pruned. usage: python3 tests/test_retry.py"""
 import json, os, socket, subprocess, sys, tempfile, time, urllib.request, zipfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__))); EX = os.path.join(ROOT, '.cache', 'solidworks_urdf_exporter', 'examples', '3_DOF_ARM')
 s = socket.socket(); s.bind(('127.0.0.1', 0)); port = s.getsockname()[1]; s.close(); base = f'http://127.0.0.1:{port}'
@@ -8,7 +8,7 @@ with zipfile.ZipFile(z, 'w') as zf:
     for f in os.listdir(EX):
         if f.lower().endswith(('.sldprt', '.sldasm')): zf.write(os.path.join(EX, f), f)
 work = os.path.join(tmp, 'w'); env = dict(os.environ, SLD_TOL='1e-5')       # fine tolerance + a 1 s limit: the big part cannot finish in time on the first try
-p = subprocess.Popen([sys.executable, os.path.join(ROOT, 'src', 'serve.py'), '--port', str(port), '--work', work, '--timeout', '1', '--jobs', '2'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+p = subprocess.Popen([sys.executable, os.path.join(ROOT, 'src', 'serve.py'), '--port', str(port), '--work', work, '--timeout', '1', '--retry-factor', '30', '--jobs', '2'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
 try:
     for _ in range(50):
         try: urllib.request.urlopen(base + '/health', timeout=1); break

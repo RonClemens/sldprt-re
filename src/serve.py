@@ -214,7 +214,7 @@ class Server:
                 j.emit('progress', parts_done=counts['ok'] + counts['bad'], parts_total=counts['total'], instances_ready=len(ready), instances_total=len(inst), elapsed_s=round(time.time() - j.t0, 1))
             with ThreadPoolExecutor(max(1, s.a.jobs)) as ex: list(ex.map(work, todo))
             if retry and not j.cancel:
-                with ThreadPoolExecutor(max(1, s.a.jobs // 2)) as ex: list(ex.map(lambda p: work(p, s.a.timeout * 5, True), sorted(retry, key=lambda p: p['bytes'])))
+                with ThreadPoolExecutor(max(1, s.a.jobs // 2)) as ex: list(ex.map(lambda p: work(p, s.a.timeout * s.a.retry_factor, True), sorted(retry, key=lambda p: p['bytes'])))
             j.inst = inst
             if getattr(j, 'used_asms', None) and not j.cancel:
                 try:
@@ -352,7 +352,8 @@ def make_handler(S):
     return H
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument('--port', type=int, default=8765); ap.add_argument('--origin', action='append', default=['https://ronclemens.github.io'])
-    ap.add_argument('--jobs', type=int, default=max(1, (os.cpu_count() or 2) - 1)); ap.add_argument('--timeout', type=int, default=120, help='per-part seconds; a part that times out is retried once with 5x this and half the parallelism'); ap.add_argument('--work', help='work dir (cache, jobs). Default: ~/.sldprt-re/work, so the conversion cache survives restarts')
+    ap.add_argument('--jobs', type=int, default=max(1, (os.cpu_count() or 2) - 1)); ap.add_argument('--timeout', type=int, default=600, help='per-part seconds; a part that times out is retried once with --retry-factor times this and half the parallelism')
+    ap.add_argument('--retry-factor', type=float, default=2.0); ap.add_argument('--work', help='work dir (cache, jobs). Default: ~/.sldprt-re/work, so the conversion cache survives restarts')
     ap.add_argument('--token', default=os.environ.get('SLD_TOKEN'), help='require this bearer token (header, or ?token= for EventSource)')
     ap.add_argument('--replay', metavar='JOBDIR', help='serve a recorded job dir (events.jsonl + parts/) instead of converting'); ap.add_argument('--speed', type=float, default=1.0)
     ap.add_argument('--allow-host', action='append', default=['github.com', 'githubusercontent.com'], help='hosts the helper may download from (import by URL); subdomains included')
