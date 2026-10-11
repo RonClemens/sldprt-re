@@ -5,8 +5,10 @@ Nothing here is applied to `ipb_viz` automatically. This repo never commits to t
 - `sld-helper-client.js` - framework-neutral client for `src/serve.py` (health, upload with progress, SSE events, part fetch, cancel).
 - `sld-progressive-import.js` - Three.js adapter: boxes from the `plan` event, real geometry swapped in per `part_done`, red boxes for
   failures, a "show unresolved parts" toggle, Cancel / Keep partial. Stable mesh order, so part numbers never shuffle.
-- `ipb_viz.patch` - the complete ipb_viz change (the two files above + hooks in `app.js`, `index.html`, `style.css`).
-  Apply in an ipb_viz checkout: `git apply /path/to/sldprt-re/viewer/ipb_viz.patch`. Not applied yet; a PR will only be opened when authorized.
+
+Landed in `ipb_viz` directly (the two files above + hooks in `app.js`, `index.html`, `style.css`) — see
+[ipb_viz#1](https://github.com/RonClemens/ipb_viz/pull/1), merged. The `ipb_viz.patch` file that carried this change
+over is gone now that it has; these two files stay here as the source of truth for the viewer side.
 
 ## Run it on a desktop
 
@@ -19,7 +21,7 @@ Open the ipb_viz page in Chrome/Edge (Firefox should work; Safari may block http
 ## Develop / test without converting
 
     python3 src/serve.py --port 8766 --replay <recorded-job-dir> --speed 15
-    python3 tests/e2e_viewer.py <ipb_viz checkout with the patch> <recorded-job-dir> <screenshot-prefix> 15
+    python3 tests/e2e_viewer.py <ipb_viz checkout> <recorded-job-dir> <screenshot-prefix> 15
 
 A job directory is recorded automatically (`events.jsonl` + `parts/`) every time the helper converts something.
 `tests/e2e_viewer.py` drives headless Chromium through the whole flow (file picker -> boxes -> geometry in place -> done).
