@@ -12,6 +12,11 @@ def judge(m, tol_mm=0.05, tol_deg=0.05):
     if t == 'concentric':
         c = np.cross(d1, d2); off = np.linalg.norm(np.cross(b['point'] - a['point'], d1)) if np.linalg.norm(c) < 1e-9 else abs((b['point'] - a['point']) @ unit(c))
         ok = off * 1e3 < tol_mm and ang < tol_deg; return ('pass' if ok else 'fail'), f'axis offset {off*1e3:.3f} mm, misalignment {ang:.3f} deg'
+    if t == 'angle' and a.get('kind') == b.get('kind') == 'PLANE':
+        D = (m.get('params') or {}).get('D1')
+        if D is None: return 'unchecked', 'no angle value'
+        want = math.degrees(abs(D)) % 180; want = min(want, 180 - want)       # angle between the plane lines (0..90)
+        return ('pass' if abs(ang - want) < 0.1 else 'fail'), f'angle {ang:.3f} deg vs stored {want:.3f} deg'
     if t in ('coincident', 'parallel', 'distance') and a.get('kind') == b.get('kind') == 'PLANE':
         gap = abs(float((b['point'] - a['point']) @ d1))
         if t == 'parallel': return ('pass' if ang < tol_deg else 'fail'), f'angle {ang:.3f} deg'

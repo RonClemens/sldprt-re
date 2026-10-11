@@ -36,6 +36,19 @@ def line_dist(p1,d1,p2,d2):
     d1=d1/np.linalg.norm(d1); d2=d2/np.linalg.norm(d2); c=np.cross(d1,d2)
     if np.linalg.norm(c)<1e-9: return np.linalg.norm(np.cross(p2-p1,d1)),0.0
     return abs((p2-p1)@c)/np.linalg.norm(c), math.degrees(math.asin(min(1,np.linalg.norm(c))))
+_PLANES={'Front':(0.,0.,1.),'Top':(0.,1.,0.),'Right':(1.,0.,0.)}      # SolidWorks default origin planes: Front=XY, Top=XZ, Right=YZ (normals in the part frame)
+def origin_plane(component,byname):
+    """'Front Plane@Pipe-1@Assem' -> that plane of component instance Pipe<1>;  'Top Plane@Assem' -> the assembly's own plane (world frame).
+    Returns None when the entity is not a default origin plane. Face dict as the rest of the resolver uses (kind/point/dir in world metres)."""
+    mm=re.match(r'^(Front|Top|Right)( Plane)?@(.+)$',component)
+    if not mm: return None
+    name,rest=mm.group(1),mm.group(3)
+    n=np.array(_PLANES[name])
+    if '@' not in rest: inst=None; M=np.eye(4); owner=rest; missing=False         # assembly-level plane
+    else:
+        owner='/'.join(comp_path(rest)); inst=byname.get(owner); missing=inst is None; M=inst['M'] if inst else np.eye(4)
+    face=dict(kind='PLANE',point=M[3,:3].copy(),dir=n@M[:3,:3],part=(inst or {}).get('part'),origin_plane=name) if not missing else None
+    return dict(instance=owner,inst=inst,missing=missing,face=face)
 def _disambiguate(m):
     """An id-rep (feature id, index) can match several faces of a part; the first was always taken. When any entity has more than one
     candidate, try the combinations and keep the one that satisfies the mate -- only if exactly one does (otherwise keep the first and
@@ -89,6 +102,12 @@ def resolve(sldasm,folder,schema):
         try:
             ents=m['entities']; reps=list(m['idreps'])
             for e in ents:
+                pl=origin_plane(e['component'],byname)
+                if pl is not None:      # an origin plane (Front/Top/Right) of a component or of the assembly itself: fixed geometry, no id-rep
+                    e.update(instance=pl['instance'],top=pl['instance'].split('/')[0],is_assembly_level=pl['inst'] is None,_inst=pl['inst'],_ref=True)
+                    if pl['missing']: e['dangling']=True; m['dangling']=True
+                    else: e['face']=pl['face']
+                    continue
                 path='/'.join(comp_path(e['component'])); e['instance']=path; e['top']=comp_path(e['component'])[0]
                 inst_=byname.get(path)
                 e['is_assembly_level']= inst_ is None   # a sub-assembly (its origin planes etc.)
@@ -100,7 +119,7 @@ def resolve(sldasm,folder,schema):
                 try: cls,vals=parse_idrep(r); key=(vals[0],vals[1])
                 except (ValueError,IndexError): m.setdefault('unparsed_idreps',[]).append(r[:60]); continue    # id-rep classes not decoded yet (e.g. moDerivedSurfIdRep_c)
                 for k,e in enumerate(ents):
-                    if k in used or e['_inst'] is None: continue
+                    if k in used or e['_inst'] is None or e.get('_ref'): continue
                     g=part_faces(e['_inst']['part']).get(key)
                     if g: e['idrep']=r; used.add(k); e['_cands']=g; e['face']=to_world(g[0],e['_inst']['M']); e['face']['part']=e['_inst']['part']; break
             _disambiguate(m)

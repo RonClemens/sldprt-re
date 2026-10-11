@@ -71,9 +71,14 @@ def parse_mates(d):
         mates.append(mate)
     return mates      # len(mates) may be below mates.declared (folders, record types not recognised yet)
 def parse_idrep(s):
-    """'moFromSktEnt3IntSurfIdRep_c,58,5,-1,0, ' -> (class,[ints])"""
-    p=[x.strip() for x in s.split(',') if x.strip()!='']
-    return p[0],[int(x) for x in p[1:]]
+    """'moFromSktEnt3IntSurfIdRep_c,58,5,-1,0, ' -> (class,[ints]).
+    A record may span several lines (the first names the face, the rest list neighbouring faces) and may nest a seed id for faces made
+    by patterns / mirrors / copies ('moCirPatternSurfIdRep_c,189,1,<moFromSktEntSurfIdRep_c,118,1>,'): only the first line's own numbers
+    are returned, nested <...> removed."""
+    first=s.strip().split('\n')[0]
+    while '<' in first: first=re.sub(r'<[^<>]*>','',first)
+    p=[x.strip() for x in first.split(',') if x.strip()!='']
+    return p[0],[int(x) for x in p[1:] if re.fullmatch(r'-?\d+',x)]
 def comp_path(c):
     """'Arm_link-1@ORIGINAL/Arm_brace-1@Arm_link' -> ['Arm_link<1>','Arm_brace<1>'] (instance names as used by flatten)"""
     out=[]
