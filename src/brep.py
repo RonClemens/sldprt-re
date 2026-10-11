@@ -60,7 +60,7 @@ class Brep:
             ts.append([kn[-1]]); ts=np.concatenate(ts); ts=ts[(ts>=nb.range[0]-1e-14)&(ts<=nb.range[1]+1e-14)]
             P=nb.curve(ts)
             if nb.vd in(2,3) and P.shape[1]==2: return P,False  # uv curve
-            return (simplify(P,TOL) if COARSE else P),False
+            return (simplify(P,TOL) if COARSE else P),bool(getattr(nb,'periodic',False))     # a periodic B-curve is a closed loop, like a circle
         if t=='INTERSECTION':
             P=np.array(N[n['chart']]['hvec'],float)
             return (simplify(P,TOL) if COARSE else P),False

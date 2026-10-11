@@ -45,12 +45,13 @@ def fallback_transmits(streams):
             if raw[:2]==b'PS': yield name,k,raw
 def is_ole2(path):
     with open(path,'rb') as f: return f.read(4)==b'\xd0\xcf\x11\xe0'
+CACHE_VERSION='3'    # bump when tessellation output changes (new surface types, boundary fixes) so stale cached meshes are not reused
 def _cache_file(path,bbox):
     d=os.environ.get('SLDPRT_CACHE')
     if not d: return None
     import hashlib
     from brep import TOL
-    h=hashlib.sha1(open(path,'rb').read()+repr(bbox).encode()+repr(TOL).encode()).hexdigest()    # tolerance is part of the key: a coarse and a fine mesh of one part must not collide
+    h=hashlib.sha1(open(path,'rb').read()+repr(bbox).encode()+repr(TOL).encode()+CACHE_VERSION.encode()).hexdigest()    # tolerance is part of the key: a coarse and a fine mesh of one part must not collide
     os.makedirs(d,exist_ok=True); return os.path.join(d,h+'.npz')
 def load_part(path,schema,log=lambda *a:None,bbox=None):
     """SLDPRT -> (P,N,I,color,fails) in part coordinates (meters). Set env SLDPRT_CACHE=dir to cache results on disk."""
