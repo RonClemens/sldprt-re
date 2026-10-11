@@ -15,6 +15,10 @@ def build_mesh(b, tess_face, log=print):
         try:
             X,t,info=tess_face(b,fid); t=np.asarray(t,int).reshape(-1,3); X=np.asarray(X,float).reshape(-1,3)
             if len(t)==0: raise ValueError('no triangles produced')
+            bb=getattr(b,'bbox',None)
+            if bb is not None:    # a face whose triangles leave the part's recorded bounding box was traced wrongly (long way round an arc, ...): drop it rather than draw stray geometry
+                lo,hi=np.array(bb[0]),np.array(bb[1]); mg=0.05*(hi-lo)+1e-3
+                if (X.min(0)<lo-mg).any() or (X.max(0)>hi+mg).any(): raise ValueError('outside recorded bounding box')
         except Exception as e: fails.append((fid,repr(e))); continue
         faces.append(dict(fid=fid,X=X,t=np.array(t),sf=b.surf(f['surface']),f=f,mode=info['mode']))
         log('face',fid,N[f['surface']]['name'],info['mode'],'tris',len(t))

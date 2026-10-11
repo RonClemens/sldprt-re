@@ -60,8 +60,9 @@ class Server:
                 if it.get('assembly') or it['part'] is None: continue
                 fn = it['part'] + '.SLDPRT'; key = part_key(fn)
                 path = idx.get(fn.lower())
+                bb_ = bbox.get(fn)
                 if path is None: missing.add(fn); parts.setdefault(key, dict(key=key, file=fn, path=None, bytes=0)); 
-                else: parts.setdefault(key, dict(key=key, file=fn, path=path, bytes=os.path.getsize(path)))
+                else: parts.setdefault(key, dict(key=key, file=fn, path=path, bytes=os.path.getsize(path), bbox=np.array(bb_).reshape(2, 3).tolist() if bb_ and len(bb_) == 6 else None))
                 M = np.asarray(it['M']); bb = bbox.get(fn); world = None
                 if bb and len(bb) == 6:
                     c = np.array([[x, y, z, 1.0] for x in (bb[0], bb[3]) for y in (bb[1], bb[4]) for z in (bb[2], bb[5])]) @ M
@@ -87,7 +88,7 @@ class Server:
                     inst.append(dict(id=len(inst), path=os.path.splitext(os.path.basename(f))[0], part=k, matrix=np.eye(4).reshape(-1).tolist(), bbox=None, hidden=False, suppressed=False))
             j.parts = parts; need = {i['part'] for i in inst if not i['suppressed']}
             todo = sorted((parts[k] for k in need if parts[k]['path']), key=lambda p: p['bytes'])
-            j.emit('plan', name=os.path.splitext(filename)[0], instances=inst, parts=[{k: v for k, v in p.items() if k != 'path'} for p in parts.values()], missing=missing, skipped=getattr(j, 'skipped', []), virtual=dict(written=len(vrep['written']), unmatched=vrep['unmatched'], ambiguous=[a['name'] for a in vrep['ambiguous']]))
+            j.emit('plan', name=os.path.splitext(filename)[0], instances=inst, parts=[{k: v for k, v in p.items() if k not in ('path', 'bbox')} for p in parts.values()], missing=missing, skipped=getattr(j, 'skipped', []), virtual=dict(written=len(vrep['written']), unmatched=vrep['unmatched'], ambiguous=[a['name'] for a in vrep['ambiguous']]))
             for k in need:
                 if not parts[k]['path']: j.emit('part_failed', key=k, reason='missing_file')
             counts = dict(ok=0, bad=len(need) - len(todo), total=len(need)); lk = threading.Lock()
@@ -97,7 +98,7 @@ class Server:
                 if j.cancel: return
                 out = os.path.join(j.dir, 'parts', p['key'] + '.glb'); j.emit('part_started', key=p['key']); t1 = time.time()
                 try:
-                    pr = subprocess.Popen([sys.executable, '-I', os.path.join(HERE, 'warm.py'), p['path'], SCHEMA, out], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+                    pr = subprocess.Popen([sys.executable, '-I', os.path.join(HERE, 'warm.py'), p['path'], SCHEMA, out, json.dumps(p.get('bbox'))], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
                     j.procs.add(pr)
                     try: so, se = pr.communicate(timeout=s.a.timeout)
                     except subprocess.TimeoutExpired: pr.kill(); pr.communicate(); res = dict(ok=False, error='timeout')
