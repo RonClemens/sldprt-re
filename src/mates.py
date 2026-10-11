@@ -11,6 +11,11 @@ Recovered so far (validated on ORIGINAL_3_DOF_ARM, see NOTES.md):
 import re, struct, math
 import numpy as np
 MATE_NAME=re.compile(r'^(Concentric|Coincident|Angle|LimitAngle|Parallel|Perpendicular|Distance|LimitDistance|Tangent|Lock|Width|Symmetric|Gear|Hinge|Slot|Path|Screw|Cam|Universal|Linear|Rack)\d+$')
+GENERIC_NAME=re.compile(r'^[^\W\d_]+\d+$')     # localized mate names ('Deckungsgleich1', 'Winkel3', ...)
+NOT_MATE=re.compile(r'^(D\d+|Folder\d*|FACE\d*|PLANAR\d*|Standard\d*|MateGroup\d*)$')
+class MateList(list):
+    """parsed mates; .declared = the count in the file header (mate folders and unrecognised records are included in it)"""
+    declared=None
 def _cstrings(d):
     out=[]
     for m in re.finditer(rb'\xff\xfe\xff(.)',d,re.S):
@@ -20,22 +25,30 @@ def _cstrings(d):
         if all(raw[i+1]==0 and (32<=raw[i]<127 or raw[i] in (0,10,13)) for i in range(0,len(raw),2)) and raw[:2]!=b'\0\0':
             out.append((m.start(),raw.decode('utf-16le').rstrip('\x00\n\r ')))
     return out
-def _kind(name):
+def _kind(name,seg=b''):
     for k in ('LimitAngle','LimitDistance','Concentric','Coincident','Angle','Parallel','Perpendicular','Distance','Tangent','Lock'):
         if name.startswith(k): return k.lower()
+    m=re.search(rb'moMate([A-Za-z]+)',seg)    # localized name: the record's class tag says what it is
+    if m:
+        t=m.group(1).decode().lower()
+        for k in ('coincid','concentric','distance','angle','parallel','perpendicular','tangent','lock'): 
+            if k in t: return {'coincid':'coincident','concentric':'concentric','distance':'distance','angle':'angle','parallel':'parallel','perpendicular':'perpendicular','tangent':'tangent','lock':'lock'}[k]
     return 'other'
 def parse_mates(d):
     count=struct.unpack_from('<H',d,4)[0]
     cs=_cstrings(d)
     heads=[(o,s) for o,s in cs if MATE_NAME.match(s)]
-    mates=[]
+    if len(heads)<count:      # file written by a localized SolidWorks: accept generic '<word><number>' names that are not parameters/folders
+        gen=[(o,s) for o,s in cs if GENERIC_NAME.match(s) and not NOT_MATE.match(s)]
+        if len(heads)<len(gen)<=count: heads=gen
+    mates=MateList(); mates.declared=count
     for i,(o,name) in enumerate(heads):
         end=heads[i+1][0] if i+1<len(heads) else len(d)
         seg=[(so,s) for so,s in cs if o<so<end]
         idreps=[(so,s) for so,s in seg if s.startswith('mo') and ',' in s]
         comps=[(so,s) for so,s in seg if '@' in s and ':' not in s and ('-' in s)]
         ents=[dict(component=c,idrep=None,_off=so) for so,c in comps[:2]]
-        mate=dict(name=name,type=_kind(name),offset=o,idreps=[r for _,r in idreps],entities=[{k:v for k,v in e.items() if k!='_off'} for e in ents])
+        mate=dict(name=name,type=_kind(name,d[o:end]),offset=o,idreps=[r for _,r in idreps],entities=[{k:v for k,v in e.items() if k!='_off'} for e in ents])
         # parameters: 'D1' followed by [2.0, ..., value]
         for so,s in seg:
             if re.fullmatch(r'D\d+',s):
@@ -56,8 +69,7 @@ def parse_mates(d):
                     if all(math.isfinite(x) and abs(x)<7 and abs(x)>1e-3 for x in (a,b)) and a-b>0.1 and abs(a-1)>1e-9 and abs(b-1)>1e-9:
                         mate['limit_bounds_rad']=[a,b]; break
         mates.append(mate)
-    assert len(mates)==count,(len(mates),count)
-    return mates
+    return mates      # len(mates) may be below mates.declared (folders, record types not recognised yet)
 def parse_idrep(s):
     """'moFromSktEnt3IntSurfIdRep_c,58,5,-1,0, ' -> (class,[ints])"""
     p=[x.strip() for x in s.split(',') if x.strip()!='']
