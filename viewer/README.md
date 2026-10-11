@@ -25,3 +25,7 @@ Open the ipb_viz page in Chrome/Edge (Firefox should work; Safari may block http
 
 A job directory is recorded automatically (`events.jsonl` + `parts/`) every time the helper converts something.
 `tests/e2e_viewer.py` drives headless Chromium through the whole flow (file picker -> boxes -> geometry in place -> done).
+
+## Phone / tunnel
+
+See `docs/phone-access.md`. `tests/test_phone.py` covers the helper endpoints and the JS client's resume logic (needs Node 18+).
