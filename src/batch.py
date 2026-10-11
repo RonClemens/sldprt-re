@@ -24,7 +24,7 @@ def walk(root, ext):
 def warm(args):
     path, timeout = args; name = os.path.basename(path)
     try:    # own process per part: subprocess timeouts kill hangs inside native numpy code, which an in-process alarm cannot
-        r = subprocess.run([sys.executable, '-I', os.path.join(HERE, 'warm.py'), path, SCHEMA], capture_output=True, text=True, timeout=timeout, env=os.environ)
+        r = subprocess.run([sys.executable, '-E', os.path.join(HERE, 'warm.py'), path, SCHEMA], capture_output=True, text=True, timeout=timeout, env=os.environ)
         out = json.loads(r.stdout.strip().splitlines()[-1]) if r.stdout.strip() else dict(ok=False, error=('crashed: ' + r.stderr[-150:]))
     except subprocess.TimeoutExpired: out = dict(ok=False, error=f'timeout after {timeout}s')
     except Exception as e: out = dict(ok=False, error=repr(e)[:200])
@@ -67,7 +67,7 @@ def main():
     def run_asm(asm):
         base = os.path.splitext(os.path.basename(asm))[0]; t1 = time.time()
         try:
-            r = subprocess.run([sys.executable, '-I', os.path.join(HERE, 'sldasm2glb.py'), asm, '--schema', SCHEMA, '-o', a.out],
+            r = subprocess.run([sys.executable, '-E', os.path.join(HERE, 'sldasm2glb.py'), asm, '--schema', SCHEMA, '-o', a.out],
                                capture_output=True, text=True, cwd=HERE, env=os.environ, timeout=a.asm_timeout)
         except subprocess.TimeoutExpired:
             return dict(file=os.path.basename(asm), ok=False, error=f'timeout after {a.asm_timeout}s', sec=round(time.time() - t1, 1))
