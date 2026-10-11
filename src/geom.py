@@ -15,7 +15,7 @@ class Nurbs:
             s.ku=s.expand(N[n['u_knots']]['knots'],N[n['u_knot_mult']]['mult'])
             s.kv=s.expand(N[n['v_knots']]['knots'],N[n['v_knot_mult']]['mult'])
             s.du,s.dv=n['u_degree'],n['v_degree']
-            assert not n['u_periodic'] and not n['v_periodic']
+            s.pu,s.pv=bool(n['u_periodic']),bool(n['v_periodic'])    # periodic directions carry the full n+d+1 knot vector, like periodic curves (see below)
             s.urange=(s.ku[s.du],s.ku[-s.du-1]); s.vrange=(s.kv[s.dv],s.kv[-s.dv-1])
         else:
             s.n=n['n_vertices']; P=P.reshape(s.n,vd)
