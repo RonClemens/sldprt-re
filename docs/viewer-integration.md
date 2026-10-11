@@ -1,6 +1,6 @@
 # Viewer integration spec: progressive SolidWorks import for ipb_viz
 
-Status: **proposal** (nothing here is implemented yet). This repo owns the converter side (sections 2-4); the viewer side
+Status: **helper and viewer patch implemented** (see `viewer/README.md`; the ipb_viz change is a patch file, not yet applied). This repo owns the converter side (sections 2-4); the viewer side
 (section 5) is written down as a contract so it can be built separately. `ipb_viz` was read, never modified, to write this.
 
 ## 1. Goals
@@ -50,7 +50,7 @@ so `new THREE.Matrix4().fromArray(m)` applies directly.
 | `GET /jobs/{job}/parts/{key}.glb` | One part, in part coordinates, shared by all of its instances. |
 | `GET /jobs/{job}/assembly.glb` | The assembly with whatever has finished so far (the "export partial" button). |
 | `POST /jobs/{job}/cancel` | Stops workers; finished parts stay available. |
-| `GET /health` | `{version, ok}` so the page can tell the helper is not running and show how to start it. |
+| `GET /health` | `{version, ok, auth, replay}` so the page can tell the helper is not running and show how to start it. |
 
 ### Events (in order of first occurrence)
 
@@ -112,3 +112,6 @@ so `new THREE.Matrix4().fromArray(m)` applies directly.
   `InstancedMesh` per part and/or hide-small-hardware only if measurements on the facility assembly demand it.
 - **Unresolved parts:** the user can toggle them on/off. Each failed or pending part keeps its box; a "Show unresolved parts" toggle
   (sidebar + manual options) controls whether the boxes are shown in the 3D view, the B/W diagram and the assembly manual.
+
+- **Desktop first.** Browser and helper on the same machine (`127.0.0.1`), so no tunnel is needed. An optional `--token` (header or `?token=`) is supported. The Android phone is a later viewer-only client (load the exported GLB, or use a tunnel to the desktop helper).
+- **Delivery to ipb_viz:** patch file (`viewer/ipb_viz.patch`); a PR is opened only once the user authorizes it.
