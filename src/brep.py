@@ -2,13 +2,30 @@ import numpy as np
 from xt import parse
 from schema import load_schema
 from geom import *
-TOL=1e-5
+import os
+TOL=float(os.environ.get('SLD_TOL','1e-5'))    # chord tolerance in metres (default 10 um); coarser = far fewer triangles, e.g. SLD_TOL=2e-4 for viewing
 # Empirical rules (validated on a 2-56 hex nut: watertight, 0 orientation conflicts):
 #  * edge start/end taken from the halfedge with sense '+' (SWAP=False)
 #  * periodic curves (circles): arc runs CLOCKWISE (about the curve's own normal) from start to end when
 #    the curve sense is '+', counter-clockwise when '-'   (FLIPMODE=2)
 SWAP=False
 FLIPMODE=2
+def simplify(P,tol):
+    """Ramer-Douglas-Peucker: drop polyline points that deviate less than `tol` from the chord (end points kept). Used only for coarse viewing meshes."""
+    n=len(P)
+    if n<=2: return P
+    keep=np.zeros(n,bool); keep[0]=keep[-1]=True; stack=[(0,n-1)]
+    while stack:
+        a,b=stack.pop()
+        if b<=a+1: continue
+        ab=P[b]-P[a]; L2=float(ab@ab); seg=P[a+1:b]-P[a]
+        if L2<1e-30: d=np.linalg.norm(seg,axis=1)
+        else:
+            t=np.clip((seg@ab)/L2,0,1); d=np.linalg.norm(seg-t[:,None]*ab,axis=1)
+        i=int(d.argmax())
+        if d[i]>tol: k=a+1+i; keep[k]=True; stack+=[(a,k),(k,b)]
+    return P[keep]
+COARSE=TOL>1.5e-5    # coarse viewing mode: boundary curves are simplified to the tolerance as well
 class Brep:
     def __init__(s,buf,schema_path='/mnt/user-data/uploads/sch_13006_s_t.txt'):
         _,base=load_schema(schema_path)
@@ -43,10 +60,10 @@ class Brep:
             ts.append([kn[-1]]); ts=np.concatenate(ts); ts=ts[(ts>=nb.range[0]-1e-14)&(ts<=nb.range[1]+1e-14)]
             P=nb.curve(ts)
             if nb.vd in(2,3) and P.shape[1]==2: return P,False  # uv curve
-            return P,False
+            return (simplify(P,TOL) if COARSE else P),False
         if t=='INTERSECTION':
             P=np.array(N[n['chart']]['hvec'],float)
-            return P,False
+            return (simplify(P,TOL) if COARSE else P),False
         if t=='TRIMMED_CURVE':
             return s.curve_poly(n['basis_curve'],depth+1)
         if t=='SP_CURVE':
