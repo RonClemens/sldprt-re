@@ -78,11 +78,23 @@ class Brep:
         if SWAP: st,en=en,st
         pos=lambda v: None if v==1 else np.array(N[N[v]['point']]['pvec'])
         return pos(st),pos(en),h['id']
+    def _halfedge_curves(s):
+        if not hasattr(s,'_hec'):
+            s._hec={x['owner']:i for i,x in s.N.items() if x['name']=='TRIMMED_CURVE' and x.get('owner') in s.N and s.N[x['owner']]['name']=='HALFEDGE'}
+        return s._hec
     def edge_poly(s,eid):
         """3D polyline from start vertex to end vertex of the edge (edge direction)."""
         if eid in s.edge_cache: return s.edge_cache[eid]
         N=s.N; e=N[eid]; A,B,_=s.edge_vertices(eid)
         cid=e['curve']; base=cid
+        if cid==1 and A is None and B is None:
+            # a ring edge with no 3D curve and no vertices (periodic faces, e.g. pipe elbows): its geometry is stored per half-edge as a
+            # trimmed surface curve (SP_CURVE). Evaluate that on its surface; the full pcurve is the closed ring.
+            hc=s._halfedge_curves().get(e['halfedge']) or s._halfedge_curves().get(N[e['halfedge']]['other'])
+            if hc is not None:
+                D,_=s.curve_poly(hc)
+                if np.linalg.norm(D[0]-D[-1])>1e-9: D=np.vstack([D,D[:1]])
+                s.edge_cache[eid]=D; return D
         while base!=1 and N[base]['name']=='TRIMMED_CURVE': base=N[base]['basis_curve']    # a trimmed straight line is still just its two end points
         if cid==1 or N[base]['name']=='LINE':
             pts=np.array([A,B]) if A is not None and B is not None else None
