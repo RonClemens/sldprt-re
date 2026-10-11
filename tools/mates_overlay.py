@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Draw verified mates on top of an assembly GLB so they can be inspected in any glTF viewer (e.g. sandbox.babylonjs.com).
-Green = mate holds in the placed assembly, red = it does not (the decoded entity is probably wrong), amber = could not be checked.
+Green = mate holds in the placed assembly with the face its id names; BLUE = holds only after choosing among several faces that share the id
+(chosen by the mate itself, not independent); red = does not hold; amber = could not be checked.
 Concentric mates are drawn as an axis bar, plane mates as thin plates on each selected plane. Node names carry the numbers.
 usage: mates_overlay.py assembly.SLDASM base.glb out.glb [--search ROOT] [--size-mm 60]   (base.glb from sldasm2glb.py)"""
 import argparse, json, os, struct, sys
@@ -8,7 +9,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__))); sys.path.ins
 import numpy as np
 from mates_resolve import resolve
 from verify_mates import judge, SCHEMA
-COL = dict(pass_=(0.10, 0.85, 0.25), fail=(0.95, 0.10, 0.10), unchecked=(1.0, 0.7, 0.1))
+COL = dict(pass_=(0.10, 0.85, 0.25), fail=(0.95, 0.10, 0.10), unchecked=(1.0, 0.7, 0.1), chosen=(0.20, 0.65, 1.0))
 def box(center, axis, length, thick):
     """oriented box centred at `center`, long along `axis`; returns flat-shaded (positions, normals, indices)"""
     a = axis / np.linalg.norm(axis); t = np.cross(a, [1, 0, 0]); t = np.cross(a, [0, 1, 0]) if np.linalg.norm(t) < 1e-6 else t
@@ -34,7 +35,8 @@ def build(asm, search, size_m):
     for m in mates:
         st, det = judge(m); tally[st] += 1
         if st == 'undecoded': continue
-        col = COL['pass_' if st == 'pass' else st] if st in ('pass', 'fail', 'unchecked') else COL['unchecked']
+        col = COL['chosen'] if (st == 'pass' and m.get('disambiguated')) else COL['pass_' if st == 'pass' else st] if st in ('pass', 'fail', 'unchecked') else COL['unchecked']
+        if st == 'pass' and m.get('disambiguated'): det += ' [faces chosen by the mate itself]'
         f = [e['face'] for e in m['entities']]
         if m['type'] == 'concentric':
             for k, x in enumerate(f):

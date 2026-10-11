@@ -33,6 +33,23 @@ def line_dist(p1,d1,p2,d2):
     d1=d1/np.linalg.norm(d1); d2=d2/np.linalg.norm(d2); c=np.cross(d1,d2)
     if np.linalg.norm(c)<1e-9: return np.linalg.norm(np.cross(p2-p1,d1)),0.0
     return abs((p2-p1)@c)/np.linalg.norm(c), math.degrees(math.asin(min(1,np.linalg.norm(c))))
+def _disambiguate(m):
+    """An id-rep (feature id, index) can match several faces of a part; the first was always taken. When any entity has more than one
+    candidate, try the combinations and keep the one that satisfies the mate -- only if exactly one does (otherwise keep the first and
+    flag m['ambiguous_faces']). m['disambiguated'] marks mates whose faces were chosen by their own constraint (not an independent check)."""
+    import itertools
+    from mates_check import judge
+    ents=[e for e in m['entities'] if e.get('_cands')]
+    if len(m['entities'])!=2 or len(ents)!=2 or all(len(e['_cands'])==1 for e in ents): return
+    if judge(m)[0]=='pass': return                      # the first candidates already hold: nothing to decide
+    ok=[]
+    for combo in itertools.product(*[range(len(e['_cands'])) for e in ents]):
+        trial=dict(m,entities=[dict(e,face=dict(to_world(e['_cands'][i],e['_inst']['M']),part=e['_inst']['part'])) for e,i in zip(ents,combo)])
+        if judge(trial)[0]=='pass': ok.append(combo)
+    if len(ok)==1:
+        for e,i in zip(ents,ok[0]): e['face']=dict(to_world(e['_cands'][i],e['_inst']['M']),part=e['_inst']['part'])
+        m['disambiguated']=True
+    else: m['ambiguous_faces']=len(ok)
 def resolve(sldasm,folder,schema):
     st=read_streams(sldasm)
     files,models,_=parse_tree(st['swXmlContents/COMPINSTANCETREE']); root=find_root(models,os.path.basename(sldasm))
@@ -81,7 +98,8 @@ def resolve(sldasm,folder,schema):
                 for k,e in enumerate(ents):
                     if k in used or e['_inst'] is None: continue
                     g=part_faces(e['_inst']['part']).get(key)
-                    if g: e['idrep']=r; used.add(k); e['face']=to_world(g[0],e['_inst']['M']); e['face']['part']=e['_inst']['part']; break
+                    if g: e['idrep']=r; used.add(k); e['_cands']=g; e['face']=to_world(g[0],e['_inst']['M']); e['face']['part']=e['_inst']['part']; break
+            _disambiguate(m)
         except Exception as e: m['entities']=[]; m['error']=repr(e)[:100]    # one odd mate must not abort the whole assembly
     return mates,inst,models,root
 def check(mates):
