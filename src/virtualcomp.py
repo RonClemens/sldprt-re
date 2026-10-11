@@ -9,10 +9,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from sldcont import read_streams, read_streams_bytes
 NS_VIRTUAL = re.compile(r'<swReference [^>]*swName="([^"]*)"[^>]*swIsVirtualComponent="YES"')
 def _score(stream, base):
-    """length of the common prefix if `stream` is `base` or a truncated `base` plus digits, else 0"""
+    """score if `stream` is the stream of component `base`: the full name, or -- for names over 25 characters -- the first 25 characters
+    plus a numeric id (observed: 'Copy of 4464K354_TYPE 304' + '53'). Anything looser also matched different components whose names
+    merely ended in a digit ('Copy of Copy of 27244647-C2' is not a truncated '...-C4 MESH')."""
     if stream == base: return len(base) + 1
-    for k in range(len(stream), 14, -1):
-        if base.startswith(stream[:k]) and stream[k:].isdigit(): return k
+    if len(base) > 25 and stream.startswith(base[:25]) and len(stream) > 25 and stream[25:].isdigit(): return 25
     return 0
 def _size_matches(data, bb, tol=0.03):
     """does the embedded body's extent match the assembly's recorded bounding box (metres)? Uses the B-rep's vertex points only
