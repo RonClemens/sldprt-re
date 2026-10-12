@@ -231,6 +231,13 @@ class Server:
             j.emit('plan', name=os.path.splitext(filename)[0], instances=inst, parts=[{k: v for k, v in p.items() if k not in ('path', 'bbox')} for p in parts.values()], missing=missing, skipped=getattr(j, 'skipped', []), virtual=dict(written=len(vrep['written']), unmatched=vrep['unmatched'], ambiguous=[a['name'] for a in vrep['ambiguous']]),
                    sldasm_files_found=len(asms), top_level_assemblies=[os.path.basename(a) for a in getattr(j, 'used_asms', [])], assembly_refs=assembly_refs, part_refs=len(inst) - assembly_refs)
             j.convert_ready.wait(s.a.select_timeout)
+            # Event.wait(timeout) timing out does NOT set the event -- only .set() does. Without
+            # this, a /select that arrives after the timeout already fired would still find
+            # convert_ready unset, pass S.select()'s "already closed?" check, and get a
+            # misleading {ok: true} back even though this thread already read j.selected and
+            # moved on; the late answer would be silently ignored despite claiming success. This
+            # closes the gate for real the moment the wait is over, by whichever path it ended.
+            j.convert_ready.set()
             if j.cancel:
                 j.emit('job_done', ok=False, error='cancelled', cancelled=True, seconds=round(time.time() - j.t0, 1)); j.done = True; return
             sel = j.selected if j.selected is not None else 'all'  # no answer within the timeout: fail open, convert everything
@@ -431,7 +438,7 @@ def main():
     ap = argparse.ArgumentParser(); ap.add_argument('--port', type=int, default=8765); ap.add_argument('--origin', action='append', default=['https://ronclemens.github.io'])
     ap.add_argument('--jobs', type=int, default=max(1, (os.cpu_count() or 2) - 1)); ap.add_argument('--timeout', type=int, default=600, help='per-part seconds; a part that times out is retried once with --retry-factor times this and half the parallelism')
     ap.add_argument('--retry-factor', type=float, default=2.0); ap.add_argument('--work', help='work dir (cache, jobs). Default: ~/.sldprt-re/work, so the conversion cache survives restarts')
-    ap.add_argument('--select-timeout', type=float, default=300, help='seconds to wait after \'plan\' for the viewer\'s POST /jobs/<id>/select before converting everything anyway (the viewer answers immediately for a small import, or once its selection modal is confirmed for a large one)')
+    ap.add_argument('--select-timeout', type=float, default=1800, help='seconds to wait after \'plan\' for the viewer\'s POST /jobs/<id>/select before converting everything anyway (the viewer answers immediately for a small import, or once its selection modal is confirmed for a large one; default 30 minutes -- a real multi-thousand-row import can take a person a while to pick through, and this only costs an idle wait, not CPU, so it is deliberately generous)')
     ap.add_argument('--token', default=os.environ.get('SLD_TOKEN'), help='require this bearer token (header, or ?token= for EventSource)')
     ap.add_argument('--replay', metavar='JOBDIR', help='serve a recorded job dir (events.jsonl + parts/) instead of converting'); ap.add_argument('--speed', type=float, default=1.0)
     ap.add_argument('--allow-host', action='append', default=['github.com', 'githubusercontent.com'], help='hosts the helper may download from (import by URL); subdomains included')
