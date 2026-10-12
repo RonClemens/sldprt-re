@@ -20,6 +20,8 @@ class Job:
         s.events = []; s.cv = threading.Condition(); s.cancel = False; s.procs = set(); s.done = False
         s.ready = {}      # key -> glb path
         s.t0 = time.time()
+        s.convert_ready = threading.Event()  # set once the client has POSTed /select (or the wait times out)
+        s.selected = None                    # None (not yet chosen) | 'all' | set of selected instance ids
     def emit(s, ev, **data):
         with s.cv:
             s.events.append((ev, data)); s.cv.notify_all()
@@ -130,9 +132,19 @@ class Server:
         threading.Thread(target=go, daemon=True).start(); return j
     def stop(s, j):
         j.cancel = True
+        j.convert_ready.set()   # wake run() immediately if it's paused waiting on a /select that will now never come
         for p in list(j.procs):
             try: p.kill()
             except Exception: pass
+    def select(s, j, body):
+        """Resolves the pause inserted after 'plan' (see run()): `body` is {"all": true} or
+        {"instance_ids": [...]} naming the leaf (non-assembly) instances to actually convert.
+        Only the first call counts -- a job proceeds exactly once past this gate."""
+        if j.done or j.convert_ready.is_set(): return False
+        ids = body.get('instance_ids')
+        j.selected = 'all' if body.get('all') or ids is None else set(ids)
+        j.convert_ready.set()
+        return True
     # ---- plan (instances placed from the component tree, no geometry needed)
     def plan(s, j, files, asms):
         from sldcont import read_streams
@@ -151,18 +163,34 @@ class Server:
             root = root[0] if root else max(models.values(), key=lambda m: len(m['refs']))
             bbox = {m['file']: m['bbox'] for m in models.values() if m['file']}
             prefix = os.path.splitext(os.path.basename(asm))[0]
+            # path_to_key maps each node's OWN relative path (as flatten_instances returns it,
+            # not yet prefixed with the top assembly's name) to its own part-number-equivalent
+            # key -- '' is the top assembly itself, so a direct child's "next higher assembly"
+            # (nha) is the top assembly's own key, looked up via its parent's relative path.
+            path_to_key = {'': part_key(os.path.basename(asm))}
             for it in flatten_instances(models, root['id']):
-                if it.get('assembly') or it['part'] is None: continue
-                fn = it['part'] + '.SLDPRT'; key = part_key(fn)
+                is_asm = bool(it.get('assembly')) or it['part'] is None
+                fn = it['file'] if is_asm else it['part'] + '.SLDPRT'
+                key = part_key(fn)
+                parent_rel = '/'.join(it['path'].split('/')[:-1])
+                nha = path_to_key.get(parent_rel)
+                path_to_key[it['path']] = key
+                level = it['path'].count('/') + 1  # 1 = direct child of the top assembly
+                full_path = prefix + '/' + it['path']
+                name = it['path'].rsplit('/', 1)[-1]
+                if is_asm:
+                    inst.append(dict(id=len(inst), path=full_path, part=None, assembly=True, key=key, name=name,
+                                     nha=nha, level=level, hidden=bool(it['hidden']), suppressed=bool(it['suppressed'])))
+                    continue
                 path = idx.get(fn.lower())
                 bb_ = bbox.get(fn)
-                if path is None: missing.add(fn); parts.setdefault(key, dict(key=key, file=fn, path=None, bytes=0)); 
+                if path is None: missing.add(fn); parts.setdefault(key, dict(key=key, file=fn, path=None, bytes=0))
                 else: parts.setdefault(key, dict(key=key, file=fn, path=path, bytes=os.path.getsize(path), bbox=np.array(bb_).reshape(2, 3).tolist() if bb_ and len(bb_) == 6 else None))
                 M = np.asarray(it['M']); bb = bbox.get(fn); world = None
                 if bb and len(bb) == 6:
                     c = np.array([[x, y, z, 1.0] for x in (bb[0], bb[3]) for y in (bb[1], bb[4]) for z in (bb[2], bb[5])]) @ M
                     world = [c[:, :3].min(0).tolist(), c[:, :3].max(0).tolist()]
-                inst.append(dict(id=len(inst), path=prefix + '/' + it['path'], part=key, matrix=M.reshape(-1).tolist(), bbox=world,
+                inst.append(dict(id=len(inst), path=full_path, part=key, name=name, nha=nha, level=level, matrix=M.reshape(-1).tolist(), bbox=world,
                                  hidden=bool(it['hidden']), suppressed=bool(it['suppressed'])))
         return inst, parts, sorted(missing)
     def run(s, j, filename):
@@ -180,11 +208,31 @@ class Server:
             else:    # standalone parts: one identity instance each
                 inst, parts, missing = [], {}, []
                 for f in files:
-                    k = part_key(os.path.basename(f)); parts[k] = dict(key=k, file=os.path.basename(f), path=f, bytes=os.path.getsize(f))
-                    inst.append(dict(id=len(inst), path=os.path.splitext(os.path.basename(f))[0], part=k, matrix=np.eye(4).reshape(-1).tolist(), bbox=None, hidden=False, suppressed=False))
-            j.parts = parts; need = {i['part'] for i in inst if not i['suppressed']}
-            todo = sorted((parts[k] for k in need if parts[k]['path']), key=lambda p: p['bytes'])
+                    k = part_key(os.path.basename(f)); nm = os.path.splitext(os.path.basename(f))[0]
+                    parts[k] = dict(key=k, file=os.path.basename(f), path=f, bytes=os.path.getsize(f))
+                    inst.append(dict(id=len(inst), path=nm, part=k, name=nm, nha=None, level=1, matrix=np.eye(4).reshape(-1).tolist(), bbox=None, hidden=False, suppressed=False))
+            j.parts = parts
+            # Pause here for the viewer's "pick which assemblies/parts to load" modal (large
+            # imports only -- the viewer decides, this just waits): the client already has the
+            # full instance/part list from the 'plan' event below, so this does not need to send
+            # anything more -- it only needs to hear back which instance ids to actually convert.
+            # A client that never answers (closed tab, older viewer) does not hang the job
+            # forever: after --select-timeout seconds this proceeds as if "all" had been selected,
+            # i.e. exactly today's behavior.
+            leaf_ids = {i['id'] for i in inst if i['part']}
             j.emit('plan', name=os.path.splitext(filename)[0], instances=inst, parts=[{k: v for k, v in p.items() if k not in ('path', 'bbox')} for p in parts.values()], missing=missing, skipped=getattr(j, 'skipped', []), virtual=dict(written=len(vrep['written']), unmatched=vrep['unmatched'], ambiguous=[a['name'] for a in vrep['ambiguous']]))
+            j.convert_ready.wait(s.a.select_timeout)
+            if j.cancel:
+                j.emit('job_done', ok=False, error='cancelled', cancelled=True, seconds=round(time.time() - j.t0, 1)); j.done = True; return
+            sel = j.selected if j.selected is not None else 'all'  # no answer within the timeout: fail open, convert everything
+            chosen = leaf_ids if sel == 'all' else (leaf_ids & sel)
+            j.emit('convert_started', instances_selected=len(chosen), instances_total=len(leaf_ids))
+            # Everything below this point only ever dealt with real (non-assembly) instances --
+            # dropping deselected leaves and every assembly row here keeps that true, rather than
+            # teaching the rest of run() about either concept.
+            inst = [i for i in inst if i['id'] in chosen]
+            need = {i['part'] for i in inst if not i['suppressed']}
+            todo = sorted((parts[k] for k in need if parts[k]['path']), key=lambda p: p['bytes'])
             for k in need:
                 if not parts[k]['path']: j.emit('part_failed', key=k, reason='missing_file')
             counts = dict(ok=0, bad=len(need) - len(todo), total=len(need)); lk = threading.Lock()
@@ -306,6 +354,14 @@ def make_handler(S):
                 return self._json(200, dict(job=S.start(fn, tmp).id))
             m = re.match(r'^/jobs/(\w+)/cancel$', self.path)
             if m and m.group(1) in S.jobs: S.stop(S.jobs[m.group(1)]); return self._json(200, dict(ok=True))
+            m = re.match(r'^/jobs/(\w+)/select$', self.path)
+            if m:
+                j = S.jobs.get(m.group(1))
+                if not j: return self._json(404, dict(error='not found'))
+                n = int(self.headers.get('Content-Length', 0))
+                try: body = json.loads(self.rfile.read(n) or b'{}')
+                except ValueError: return self._json(400, dict(error='bad json'))
+                return self._json(200, dict(ok=S.select(j, body)))
             self._json(404, dict(error='not found'))
         def do_PUT(self):
             if not self._auth(): return
@@ -359,6 +415,7 @@ def main():
     ap = argparse.ArgumentParser(); ap.add_argument('--port', type=int, default=8765); ap.add_argument('--origin', action='append', default=['https://ronclemens.github.io'])
     ap.add_argument('--jobs', type=int, default=max(1, (os.cpu_count() or 2) - 1)); ap.add_argument('--timeout', type=int, default=600, help='per-part seconds; a part that times out is retried once with --retry-factor times this and half the parallelism')
     ap.add_argument('--retry-factor', type=float, default=2.0); ap.add_argument('--work', help='work dir (cache, jobs). Default: ~/.sldprt-re/work, so the conversion cache survives restarts')
+    ap.add_argument('--select-timeout', type=float, default=300, help='seconds to wait after \'plan\' for the viewer\'s POST /jobs/<id>/select before converting everything anyway (the viewer answers immediately for a small import, or once its selection modal is confirmed for a large one)')
     ap.add_argument('--token', default=os.environ.get('SLD_TOKEN'), help='require this bearer token (header, or ?token= for EventSource)')
     ap.add_argument('--replay', metavar='JOBDIR', help='serve a recorded job dir (events.jsonl + parts/) instead of converting'); ap.add_argument('--speed', type=float, default=1.0)
     ap.add_argument('--allow-host', action='append', default=['github.com', 'githubusercontent.com'], help='hosts the helper may download from (import by URL); subdomains included')
