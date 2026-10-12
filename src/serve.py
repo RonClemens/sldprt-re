@@ -411,7 +411,14 @@ def make_handler(S):
             sz = os.path.getsize(path); self.send_response(200); self._cors(); self.send_header('Content-Type', 'model/gltf-binary'); self.send_header('Content-Length', str(sz)); self.end_headers()
             with open(path, 'rb') as f: shutil.copyfileobj(f, self.wfile)
     return H
+def check_workers():
+    """The conversion workers are separate interpreters (so a hung part can be killed). They must see the same packages as this process:
+    pip install --user puts numpy in the per-user site-packages, which an isolated (-I) or -s interpreter does not search."""
+    r = subprocess.run([sys.executable, '-E', '-c', 'import numpy, scipy'], capture_output=True, text=True)
+    if r.returncode:
+        raise SystemExit('A conversion worker cannot import numpy/scipy with %s:\n%s\nInstall them for that interpreter: %s -m pip install numpy scipy' % (sys.executable, r.stderr.strip()[-300:], sys.executable))
 def main():
+    check_workers()
     ap = argparse.ArgumentParser(); ap.add_argument('--port', type=int, default=8765); ap.add_argument('--origin', action='append', default=['https://ronclemens.github.io'])
     ap.add_argument('--jobs', type=int, default=max(1, (os.cpu_count() or 2) - 1)); ap.add_argument('--timeout', type=int, default=600, help='per-part seconds; a part that times out is retried once with --retry-factor times this and half the parallelism')
     ap.add_argument('--retry-factor', type=float, default=2.0); ap.add_argument('--work', help='work dir (cache, jobs). Default: ~/.sldprt-re/work, so the conversion cache survives restarts')
