@@ -36,7 +36,10 @@ def flatten_instances(models,root_id):
             p=path+[nm]
             if ch['file'].upper().endswith('.SLDPRT'): out.append(dict(path='/'.join(p),part=ch['file'].rsplit('.',1)[0],M=M,cfg=r['cfg'],**fl))
             else:
-                out.append(dict(path='/'.join(p),part=None,assembly=True,M=M,cfg=r['cfg'],**fl)); rec(r['model'],M,p,fl)
+                # file=ch['file'] (the sub-assembly's own .SLDASM name) lets a caller compute this
+                # node's own part-number-equivalent key the same way a leaf part's is computed --
+                # serve.py's plan() uses it to report a "next higher assembly" for every row.
+                out.append(dict(path='/'.join(p),part=None,assembly=True,file=ch['file'],M=M,cfg=r['cfg'],**fl)); rec(r['model'],M,p,fl)
     rec(root_id,np.eye(4),[],dict(suppressed=False,hidden=False))
     return out
 def find_root(models,sldasm_name):

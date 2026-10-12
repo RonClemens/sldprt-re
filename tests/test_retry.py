@@ -8,7 +8,7 @@ with zipfile.ZipFile(z, 'w') as zf:
     for f in os.listdir(EX):
         if f.lower().endswith(('.sldprt', '.sldasm')): zf.write(os.path.join(EX, f), f)
 work = os.path.join(tmp, 'w'); env = dict(os.environ, SLD_TOL='1e-5')       # fine tolerance + a 1 s limit: the big part cannot finish in time on the first try
-p = subprocess.Popen([sys.executable, os.path.join(ROOT, 'src', 'serve.py'), '--port', str(port), '--work', work, '--timeout', '1', '--retry-factor', '30', '--jobs', '2'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+p = subprocess.Popen([sys.executable, os.path.join(ROOT, 'src', 'serve.py'), '--port', str(port), '--work', work, '--timeout', '1', '--retry-factor', '30', '--jobs', '2', '--select-timeout', '0'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
 try:
     for _ in range(50):
         try: urllib.request.urlopen(base + '/health', timeout=1); break

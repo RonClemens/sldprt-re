@@ -50,18 +50,29 @@ so `new THREE.Matrix4().fromArray(m)` applies directly.
 | `GET /jobs/{job}/parts/{key}.glb` | One part, in part coordinates, shared by all of its instances. |
 | `GET /jobs/{job}/assembly.glb` | The assembly with whatever has finished so far (the "export partial" button). |
 | `POST /jobs/{job}/cancel` | Stops workers; finished parts stay available. |
+| `POST /jobs/{job}/select` | Body `{"all": true}` or `{"instance_ids": [...]}`. Answers the pause described under `plan` below. Returns `{ok}`; `ok: false` means the job already passed the gate (done, or already answered) and this had no effect. |
 | `GET /health` | `{version, ok, auth, replay}` so the page can tell the helper is not running and show how to start it. |
 
 ### Events (in order of first occurrence)
 
 - `plan` - sent within ~seconds, **before any geometry**. Built from the assembly's component tree (plain XML with a bounding
   box per component):
-  `{name, instances:[{id, path, part, matrix, bbox:[min3,max3], hidden, suppressed}], parts:[{key, file, bytes}], missing:[file]}`.
-  `id` is the stable per-instance index (0..n-1); it never changes for the life of the job.
-  A lone `.sldprt` is a plan with one identity-matrix instance.
+  `{name, instances:[{id, path, part, name, nha, level, matrix, bbox:[min3,max3], hidden, suppressed, assembly?, key?, file?}], parts:[{key, file, bytes}], missing:[file]}`.
+  `id` is the stable per-instance index (0..n-1); it never changes for the life of the job. `level` is the indenture level
+  (1 = direct child of the top assembly, incrementing per nesting level); `nha` is the "next higher assembly" -- the
+  immediate parent's own key, `null` for a direct child of the top assembly. A row with `part: null` and `assembly: true`
+  is a sub-assembly, not a part: it carries `key` (its own part-number-equivalent, from its `.SLDASM` filename) and `file`
+  instead of `part`, exists purely to give the indentured tree structure and an `nha` to look up, and is never converted.
+  A lone `.sldprt` is a plan with one identity-matrix instance (no assembly rows, `nha: null`, `level: 1`).
+  **The job then pauses** (see "Server behaviour" below) until the page answers with `POST /jobs/{job}/select`.
+- `convert_started {instances_selected, instances_total}` - sent once the pause above is resolved, before the first
+  `part_started`. `instances_total` counts every leaf (non-assembly) instance from `plan`; `instances_selected` is how many
+  will actually be converted.
 - `part_started {key}` / `part_done {key, url, tris, failed_faces, sec}` / `part_failed {key, reason}`
   (reasons are short codes: `timeout`, `unsupported_surface:<type>`, `ole2`, `no_body`, `missing_file`, `error:<text>`).
-- `progress {parts_done, parts_total, instances_ready, instances_total, elapsed_s}`.
+- `progress {parts_done, parts_total, instances_ready, instances_total, elapsed_s}`. `instances_total` here is
+  `instances_selected` from `convert_started`, not every instance in `plan` -- a deselected part is never "pending", it
+  simply never existed for the rest of the job.
 - `mates {joints, mates}` - the decoded mates/joints (same content as the GLB root `extras` today); sent when available.
 - `job_done {ok, parts_ok, parts_failed, seconds}`. A stalled job emits no further events; the helper also sends a `: keep-alive`
   comment every 10 s so the page can tell "slow" from "dead".
@@ -74,16 +85,28 @@ so `new THREE.Matrix4().fromArray(m)` applies directly.
 - Order: smallest parts first (fast visible progress); heavy outliers last.
 - A part referenced by an assembly but absent from the upload is reported as `missing_file` and stays a box.
 - One job at a time per helper by default; a second import cancels the first.
+- **Selection gate:** after emitting `plan`, the job always pauses (up to `--select-timeout`, default 300s) for a
+  `POST /jobs/{job}/select`. This lets the page show a "pick which assemblies/parts to load" modal for a large import
+  *before* spending any CPU converting parts the user doesn't want, without the helper needing to know or care how big
+  "large" is -- that threshold lives entirely in the page, which can just answer `{"all": true}` immediately for a small
+  import so the pause is imperceptible. A client that never answers (closed tab, a viewer built before this existed) does
+  not hang the job forever: past the timeout the helper proceeds as if `{"all": true}` had been posted, i.e. exactly the
+  old unconditional behavior. `POST .../cancel` while paused wakes the job immediately instead of waiting out the timeout.
 
 ## 5. Viewer contract (to be implemented in ipb_viz, not here)
 
 1. **Entry points.** Drop/browse accepts `.sldprt .sldasm .zip` in addition to today's formats; `.zip`/SolidWorks files go to the
    helper, everything else keeps its current path. If `/health` fails, show "start the helper: `python3 src/serve.py`" instead of
    the current convert-to-STEP message.
-2. **On `plan`:** create the import group and, for each instance, one `Mesh` with a `BoxGeometry` sized from `bbox`, a flat
-   translucent "pending" material, `matrix` applied, `name` = last path segment, `userData.instanceId = id`. Then call the
-   existing `collectCadParts()` and fit the camera **once**. Part numbers are therefore stable for the whole import (they are
-   assigned from the plan's fixed instance order), so selection, the sidebar list and callouts do not shuffle as parts arrive.
+2. **On `plan`:** decide which instances to actually load, then `POST /jobs/{job}/select` to unblock the job (see "Selection
+   gate" above) -- below some instance-count threshold, answer `{"all": true}` immediately so small imports see no change at
+   all; above it, show a modal built from `plan.instances` (sortable/filterable by `level`, `part`/`key`, `name`, `nha`) and
+   answer with `{"instance_ids": [...]}` once the user confirms. Only then create the import group and, for each *selected,
+   non-assembly* instance, one `Mesh` with a `BoxGeometry` sized from `bbox`, a flat translucent "pending" material, `matrix`
+   applied, `name` = last path segment, `userData.instanceId = id`. Then call the existing `collectCadParts()` and fit the
+   camera **once**. Part numbers are therefore stable for the whole import (they are assigned from the selected instances'
+   fixed order), so selection, the sidebar list and callouts do not shuffle as parts arrive. A deselected instance is simply
+   never added to the scene -- not shown as a box, not counted anywhere.
 3. **On `part_done`:** fetch the part GLB once, take its geometry/material, and assign `mesh.geometry` (shared) to every pending
    mesh of that part. Do not recreate meshes, do not renumber, do not refit the camera. Dispose of the box geometry.
 4. **On `part_failed`:** leave the box, tint it red, tooltip = reason; list it in the progress panel.

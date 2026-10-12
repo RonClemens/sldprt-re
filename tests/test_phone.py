@@ -26,7 +26,7 @@ def main():
         for f in os.listdir(EX):
             if f.lower().endswith(('.sldprt', '.sldasm')): zf.write(os.path.join(EX, f), f)
     data = open(z, 'rb').read(); port = free_port(); base = f'http://127.0.0.1:{port}'
-    p = subprocess.Popen([sys.executable, os.path.join(ROOT, 'src', 'serve.py'), '--port', str(port), '--work', os.path.join(tmp, 'w'), '--token', 'tok'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    p = subprocess.Popen([sys.executable, os.path.join(ROOT, 'src', 'serve.py'), '--port', str(port), '--work', os.path.join(tmp, 'w'), '--token', 'tok', '--select-timeout', '0'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         for _ in range(50):
             try: urllib.request.urlopen(base + '/health', timeout=1); break
