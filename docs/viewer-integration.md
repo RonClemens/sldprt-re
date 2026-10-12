@@ -57,13 +57,20 @@ so `new THREE.Matrix4().fromArray(m)` applies directly.
 
 - `plan` - sent within ~seconds, **before any geometry**. Built from the assembly's component tree (plain XML with a bounding
   box per component):
-  `{name, instances:[{id, path, part, name, nha, level, matrix, bbox:[min3,max3], hidden, suppressed, assembly?, key?, file?}], parts:[{key, file, bytes}], missing:[file]}`.
+  `{name, instances:[{id, path, part, name, nha, level, matrix, bbox:[min3,max3], hidden, suppressed, assembly?, key?, file?}], parts:[{key, file, bytes}], missing:[file], sldasm_files_found, top_level_assemblies:[file], assembly_refs, part_refs}`.
   `id` is the stable per-instance index (0..n-1); it never changes for the life of the job. `level` is the indenture level
   (1 = direct child of the top assembly, incrementing per nesting level); `nha` is the "next higher assembly" -- the
   immediate parent's own key, `null` for a direct child of the top assembly. A row with `part: null` and `assembly: true`
   is a sub-assembly, not a part: it carries `key` (its own part-number-equivalent, from its `.SLDASM` filename) and `file`
   instead of `part`, exists purely to give the indentured tree structure and an `nha` to look up, and is never converted.
   A lone `.sldprt` is a plan with one identity-matrix instance (no assembly rows, `nha: null`, `level: 1`).
+  The last four fields are a diagnostic for "why is everything the same level": `sldasm_files_found` is how many `.sldasm`
+  files the upload contained at all; `top_level_assemblies` is which of those `plan()` actually walked as a top-level
+  assembly (normally exactly one -- more than one either means the ZIP genuinely bundles unrelated assemblies, or that
+  `top_level()` in `batch.py` failed to recognize one of them as referenced by another and is worth a second look);
+  `assembly_refs`/`part_refs` count, across the whole walk, how many references resolved to another `.sldasm` vs. a leaf
+  `.sldprt`. `assembly_refs: 0` against a real, present `.sldasm` means the component tree itself has no sub-assembly
+  nesting in it -- every part really is a direct child of the top assembly in SolidWorks' own data, not a parsing bug.
   **The job then pauses** (see "Server behaviour" below) until the page answers with `POST /jobs/{job}/select`.
 - `convert_started {instances_selected, instances_total}` - sent once the pause above is resolved, before the first
   `part_started`. `instances_total` counts every leaf (non-assembly) instance from `plan`; `instances_selected` is how many

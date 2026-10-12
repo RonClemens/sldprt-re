@@ -220,7 +220,16 @@ class Server:
             # forever: after --select-timeout seconds this proceeds as if "all" had been selected,
             # i.e. exactly today's behavior.
             leaf_ids = {i['id'] for i in inst if i['part']}
-            j.emit('plan', name=os.path.splitext(filename)[0], instances=inst, parts=[{k: v for k, v in p.items() if k not in ('path', 'bbox')} for p in parts.values()], missing=missing, skipped=getattr(j, 'skipped', []), virtual=dict(written=len(vrep['written']), unmatched=vrep['unmatched'], ambiguous=[a['name'] for a in vrep['ambiguous']]))
+            # Diagnostic for "why is everything level 1": straight from the XML, not a guess --
+            # how many .sldasm files the zip actually contained, which of those plan() actually
+            # walked as a top-level assembly (j.used_asms, set inside plan() itself -- empty for
+            # the standalone-parts branch above), and how many of the references found while
+            # walking them resolved to another .sldasm (sub-assembly) vs. a leaf .sldprt. If
+            # assembly_refs comes back 0 against a real, present .sldasm, the component tree
+            # itself has no sub-assembly nesting to find -- not a parsing bug.
+            assembly_refs = sum(1 for i in inst if i.get('assembly'))
+            j.emit('plan', name=os.path.splitext(filename)[0], instances=inst, parts=[{k: v for k, v in p.items() if k not in ('path', 'bbox')} for p in parts.values()], missing=missing, skipped=getattr(j, 'skipped', []), virtual=dict(written=len(vrep['written']), unmatched=vrep['unmatched'], ambiguous=[a['name'] for a in vrep['ambiguous']]),
+                   sldasm_files_found=len(asms), top_level_assemblies=[os.path.basename(a) for a in getattr(j, 'used_asms', [])], assembly_refs=assembly_refs, part_refs=len(inst) - assembly_refs)
             j.convert_ready.wait(s.a.select_timeout)
             if j.cancel:
                 j.emit('job_done', ok=False, error='cancelled', cancelled=True, seconds=round(time.time() - j.t0, 1)); j.done = True; return
