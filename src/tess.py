@@ -131,6 +131,38 @@ def _zip(A,B):
         if adv_a: tris.append((i,i+1,nA+j)); i+=1
         else: tris.append((i,nA+j+1,nA+j)); j+=1
     return X,np.array(tris)
+def _band(sf,uvs,loops3,wi,period,m,circ=False,long_way=False):
+    """a face bounded by two rings that each wind once around the periodic parameter `wi` (period `period`), at different values of the other
+    parameter: one wall of a pipe elbow (torus), or a periodic B-spline surface (lofted ring to ring). Rings are zipped through m-1 intermediate rings so a bend
+    is followed; the two boundary rings stay exactly as given so they match their neighbours. circ: the other parameter is an angle."""
+    oi=1-wi; rings=[]
+    for uv,L in zip(uvs,loops3):
+        v,w=unwrap1(uv[:,wi],period)
+        if w>0: v=v[::-1]; L=L[::-1]; uv=uv[::-1]        # unwrap1 winding is +1 for decreasing: make every ring ascend
+        o=uv[:,oi]; om=np.arctan2(np.sin(o).mean(),np.cos(o).mean()) if circ else o.mean(); rings.append((om,v,L))
+    (oA,vA,LA),(oB,vB,LB)=rings; d=(oB-oA+np.pi)%TWO-np.pi if circ else oB-oA
+    if long_way and circ: d=d-TWO*np.sign(d)
+    v0=vA[0]; seam=lambda v,L:(lambda k:(np.roll(v,-k),np.roll(L,-k,0)))(int(np.argmin(np.mod(v-v0,period))))
+    def closed(v,L):
+        v,L=seam(v,L); start=v[0]; v,_=unwrap1(v,period); v=v-v[0]+v0+np.mod(start-v0,period)       # continuous, ascending, first sample just after the seam
+        return np.column_stack([np.concatenate([v,[v[0]+period]]),np.zeros(len(v)+1)]),np.vstack([L,L[:1]])
+    rA=closed(vA,LA); rB=closed(vB,LB)
+    n=max(len(rA[0]),len(rB[0]))-1; vg=np.linspace(rA[0][0,0],rA[0][0,0]+period,n+1)
+    chain=[rA]
+    for k in range(1,m):
+        o=oA+d*k/m; oo=np.full(n+1,o); P=sf.eval(*((vg,oo) if wi==0 else (oo,vg))); chain.append((np.column_stack([vg,np.zeros(n+1)]),P))
+    chain.append(rB)
+    X=[];T=[];off=[]
+    for r in chain: off.append(sum(len(x) for x in X)); X.append(r[1])
+    for k in range(len(chain)-1):
+        Xk,tk=_zip(chain[k],chain[k+1]); nA=len(chain[k][0])
+        T+=[tuple((off[k]+i) if i<nA else (off[k+1]+i-nA) for i in tri) for tri in tk]
+    return np.vstack(X),np.array(T)
+def _torus_band(sf,uvs,loops3,long_way=False):
+    """torus wall between two end rings (each winds once around the tube, v)"""
+    (oA,oB)=[np.arctan2(np.sin(u[:,0]).mean(),np.cos(u[:,0]).mean()) for u in uvs]; d=abs((oB-oA+np.pi)%TWO-np.pi)
+    if long_way: d=TWO-d
+    step=2*np.arccos(max(0.0,1-TOL/(sf.R+sf.r))); return _band(sf,uvs,loops3,1,TWO,max(1,int(np.ceil(d/step))),True,long_way)
 def tess_torus_region(b,f,sf,L,inside):
     """torus face bounded by ONE closed loop that does not wind. The face is either the disc inside the loop
     (inside=True) or the rest of the torus (inside=False). A periodic grid supplies interior vertices; the ragged
@@ -242,6 +274,10 @@ def _inside_bbox(X,bbox,tol=2e-4):
     lo,hi=np.array(bbox[0]),np.array(bbox[1]); span=np.maximum(hi-lo,1e-9)
     return bool(((X>=lo-tol*span-1e-6)&(X<=hi+tol*span+1e-6)).all())
 
+def _bsurf_band_ok(sf,loops3):
+    wi=1 if sf.nb.pv else 0; rg=sf.nb.vrange if wi else sf.nb.urange; P=rg[1]-rg[0]
+    ws=[unwrap1(sf.inv(L)[:,wi],P)[1] for L in loops3]; os_=[unwrap1(sf.inv(L)[:,1-wi],1e30)[1] for L in loops3]
+    return all(abs(w)==1 for w in ws)
 def tess_face(b,fid):
     N=b.N; f=N[fid]; sf=b.surf(f['surface'])
     loops3=b.face_loops(fid); kind=sf.__class__.__name__
@@ -257,6 +293,13 @@ def tess_face(b,fid):
     elif kind=='Torus':
         uvs=[sf.inv(L) for L in loops3]
         winds=[(unwrap1(u[:,0])[1],unwrap1(u[:,1])[1]) for u in uvs]
+        if len(loops3)==2 and all(w[0]==0 and abs(w[1])==1 for w in winds):
+            info['mode']='torus-band'; bbox=getattr(b,'bbox',None)
+            X,t=_torus_band(sf,uvs,loops3)
+            if not _inside_bbox(X,bbox):
+                X2,t2=_torus_band(sf,uvs,loops3,True)
+                if _inside_bbox(X2,bbox): X,t=X2,t2; info['mode']+='(long)'
+            info['n']=len(t); return X,t,info
         if any(w!=(0,0) for w in winds):
             info['mode']='axis'; l2=[np.stack([(L-sf.c)@sf.x,(L-sf.c)@sf.y],-1) for L in loops3]
             X,t=_polygon_faces(l2,loops3)
@@ -284,6 +327,9 @@ def tess_face(b,fid):
             h=2*np.arccos(max(0,1-TOL/sf.r)); rr=refine_uv(sf,l2,loops3,h,h,np.array([sf.r*max(np.cos(np.mean([p[:,1].mean() for p in l2])),0.2),sf.r]))
             if rr is not None: info['mode']='sphere-refined'; X,t=rr
             else: X,t=_polygon_faces(l2,loops3)
+    elif kind=='BSurf' and (sf.nb.pu or sf.nb.pv) and len(loops3)==2 and _bsurf_band_ok(sf,loops3):
+        wi=1 if sf.nb.pv else 0; rg=sf.nb.vrange if wi else sf.nb.urange; deg=sf.nb.du if wi else sf.nb.dv
+        X,t=_band(sf,[sf.inv(L) for L in loops3],loops3,wi,rg[1]-rg[0],1 if deg==1 else 8); info['mode']='bsurf-band'
     else:
         per=getattr(sf,'periodic_u',False)
         if kind in ('Cylinder','Swept','Spun'):
