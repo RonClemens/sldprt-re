@@ -92,7 +92,7 @@ so `new THREE.Matrix4().fromArray(m)` applies directly.
 - Order: smallest parts first (fast visible progress); heavy outliers last.
 - A part referenced by an assembly but absent from the upload is reported as `missing_file` and stays a box.
 - One job at a time per helper by default; a second import cancels the first.
-- **Selection gate:** after emitting `plan`, the job always pauses (up to `--select-timeout`, default 300s) for a
+- **Selection gate:** after emitting `plan`, the job always pauses (up to `--select-timeout`, default 1800s/30min) for a
   `POST /jobs/{job}/select`. This lets the page show a "pick which assemblies/parts to load" modal for a large import
   *before* spending any CPU converting parts the user doesn't want, without the helper needing to know or care how big
   "large" is -- that threshold lives entirely in the page, which can just answer `{"all": true}` immediately for a small
@@ -108,7 +108,12 @@ so `new THREE.Matrix4().fromArray(m)` applies directly.
 2. **On `plan`:** decide which instances to actually load, then `POST /jobs/{job}/select` to unblock the job (see "Selection
    gate" above) -- below some instance-count threshold, answer `{"all": true}` immediately so small imports see no change at
    all; above it, show a modal built from `plan.instances` (sortable/filterable by `level`, `part`/`key`, `name`, `nha`) and
-   answer with `{"instance_ids": [...]}` once the user confirms. Only then create the import group and, for each *selected,
+   answer with `{"instance_ids": [...]}` once the user confirms. **Check the response's `ok`.** `ok: false` means the gate had
+   already closed (the `--select-timeout` elapsed first) and the job is already converting everything regardless of what was
+   picked -- a selection that arrives late is silently discarded server-side, never queued or retried, so a page that doesn't
+   check this will show a scene built for a selection the helper never used while it keeps converting far more in the
+   background. On `ok: false`, fall back to loading everything client-side too (matching what's actually happening) and tell
+   the user why, rather than building a group for instance ids the helper ignored. Only then create the import group and, for each *selected,
    non-assembly* instance, one `Mesh` with a `BoxGeometry` sized from `bbox`, a flat translucent "pending" material, `matrix`
    applied, `name` = last path segment, `userData.instanceId = id`. Then call the existing `collectCadParts()` and fit the
    camera **once**. Part numbers are therefore stable for the whole import (they are assigned from the selected instances'
