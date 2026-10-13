@@ -51,6 +51,7 @@ so `new THREE.Matrix4().fromArray(m)` applies directly.
 | `GET /jobs/{job}/assembly.glb` | The assembly with whatever has finished so far (the "export partial" button). |
 | `POST /jobs/{job}/cancel` | Stops workers; finished parts stay available. |
 | `POST /jobs/{job}/select` | Body `{"all": true}` or `{"instance_ids": [...]}`. Answers the pause described under `plan` below. Returns `{ok}`; `ok: false` means the job already passed the gate (done, or already answered) and this had no effect. |
+| `POST /jobs/{job}/keepalive` | No body. Bumps the `--select-timeout` clock while a "choose what to load" modal is still on screen (see "Selection gate" below). Returns `{ok}`; `ok: false` means the gate had already closed -- harmless, the next `select` call will surface that the normal way. |
 | `GET /health` | `{version, ok, auth, replay}` so the page can tell the helper is not running and show how to start it. |
 
 ### Events (in order of first occurrence)
@@ -92,13 +93,20 @@ so `new THREE.Matrix4().fromArray(m)` applies directly.
 - Order: smallest parts first (fast visible progress); heavy outliers last.
 - A part referenced by an assembly but absent from the upload is reported as `missing_file` and stays a box.
 - One job at a time per helper by default; a second import cancels the first.
-- **Selection gate:** after emitting `plan`, the job always pauses (up to `--select-timeout`, default 1800s/30min) for a
-  `POST /jobs/{job}/select`. This lets the page show a "pick which assemblies/parts to load" modal for a large import
-  *before* spending any CPU converting parts the user doesn't want, without the helper needing to know or care how big
-  "large" is -- that threshold lives entirely in the page, which can just answer `{"all": true}` immediately for a small
-  import so the pause is imperceptible. A client that never answers (closed tab, a viewer built before this existed) does
-  not hang the job forever: past the timeout the helper proceeds as if `{"all": true}` had been posted, i.e. exactly the
-  old unconditional behavior. `POST .../cancel` while paused wakes the job immediately instead of waiting out the timeout.
+- **Selection gate:** after emitting `plan`, the job always pauses (up to `--select-timeout`, default 1800s/30min *of no
+  activity*, see below) for a `POST /jobs/{job}/select`. This lets the page show a "pick which assemblies/parts to load"
+  modal for a large import *before* spending any CPU converting parts the user doesn't want, without the helper needing
+  to know or care how big "large" is -- that threshold lives entirely in the page, which can just answer `{"all": true}`
+  immediately for a small import so the pause is imperceptible. A client that never answers (closed tab, a viewer built
+  before this existed) does not hang the job forever: past the timeout the helper proceeds as if `{"all": true}` had
+  been posted, i.e. exactly the old unconditional behavior. `POST .../cancel` while paused wakes the job immediately
+  instead of waiting out the timeout.
+- **Keepalive:** `--select-timeout` is measured from the last `POST /jobs/{job}/keepalive` (or from `plan` if none has
+  arrived yet), not from a single fixed deadline -- a page showing a "choose what to load" modal should ping this
+  endpoint periodically (e.g. every 60s) for as long as that modal is open, so a person taking their time with a huge
+  instance list (or who just gets pulled away mid-decision) doesn't come back to find the helper already converted
+  everything out from under them. An older page that doesn't know about this endpoint simply never pings, so its
+  behavior is unchanged: the timeout still measures from `plan` in that case, same as before this existed.
 
 ## 5. Viewer contract (to be implemented in ipb_viz, not here)
 
@@ -107,7 +115,9 @@ so `new THREE.Matrix4().fromArray(m)` applies directly.
    the current convert-to-STEP message.
 2. **On `plan`:** decide which instances to actually load, then `POST /jobs/{job}/select` to unblock the job (see "Selection
    gate" above) -- below some instance-count threshold, answer `{"all": true}` immediately so small imports see no change at
-   all; above it, show a modal built from `plan.instances` (sortable/filterable by `level`, `part`/`key`, `name`, `nha`) and
+   all; above it, show a modal built from `plan.instances` (sortable/filterable by `level`, `part`/`key`, `name`, `nha`),
+   `POST /jobs/{job}/keepalive` on an interval for as long as that modal stays open (see "Keepalive" above -- otherwise a
+   real person picking through a huge list can lose their selection to the timeout through no fault of their own), and
    answer with `{"instance_ids": [...]}` once the user confirms. **Check the response's `ok`.** `ok: false` means the gate had
    already closed (the `--select-timeout` elapsed first) and the job is already converting everything regardless of what was
    picked -- a selection that arrives late is silently discarded server-side, never queued or retried, so a page that doesn't

@@ -22,6 +22,7 @@ class Job:
         s.t0 = time.time()
         s.convert_ready = threading.Event()  # set once the client has POSTed /select (or the wait times out)
         s.selected = None                    # None (not yet chosen) | 'all' | set of selected instance ids
+        s.last_select_activity = time.time() # bumped by /keepalive while a selection modal is open; see run()
     def emit(s, ev, **data):
         with s.cv:
             s.events.append((ev, data)); s.cv.notify_all()
@@ -145,6 +146,15 @@ class Server:
         j.selected = 'all' if body.get('all') or ids is None else set(ids)
         j.convert_ready.set()
         return True
+    def keepalive(s, j):
+        """Bumped periodically by the page while its 'choose what to load' modal is open (see
+        run()'s wait loop below): lets a real person take as long as they need to pick through a
+        huge instance list without a fixed --select-timeout firing out from under them, while a
+        genuinely abandoned tab (closed, crashed, or that never opened a modal to begin with)
+        still converges on the fail-open default after that long with no pings at all."""
+        if j.done or j.convert_ready.is_set(): return False
+        j.last_select_activity = time.time()
+        return True
     # ---- plan (instances placed from the component tree, no geometry needed)
     def plan(s, j, files, asms):
         from sldcont import read_streams
@@ -230,7 +240,20 @@ class Server:
             assembly_refs = sum(1 for i in inst if i.get('assembly'))
             j.emit('plan', name=os.path.splitext(filename)[0], instances=inst, parts=[{k: v for k, v in p.items() if k not in ('path', 'bbox')} for p in parts.values()], missing=missing, skipped=getattr(j, 'skipped', []), virtual=dict(written=len(vrep['written']), unmatched=vrep['unmatched'], ambiguous=[a['name'] for a in vrep['ambiguous']]),
                    sldasm_files_found=len(asms), top_level_assemblies=[os.path.basename(a) for a in getattr(j, 'used_asms', [])], assembly_refs=assembly_refs, part_refs=len(inst) - assembly_refs)
-            j.convert_ready.wait(s.a.select_timeout)
+            # A single flat wait can't tell "genuinely abandoned" from "a person still has the
+            # 'choose what to load' modal open but got pulled away for a while" -- no fixed
+            # --select-timeout is ever long enough for every real interruption, and picking a
+            # bigger one just makes a truly abandoned tab wait that much longer to fail open. So
+            # instead this re-checks in short slices against last_select_activity, which /keepalive
+            # bumps while that modal is actually on screen: real engagement (even just having the
+            # page open and pinging) keeps pushing the deadline out indefinitely, while a tab that
+            # never sends a ping at all -- closed, crashed, or an older viewer that doesn't know
+            # about /keepalive -- still converges on the configured timeout exactly as before.
+            j.last_select_activity = time.time()
+            while True:
+                remaining = s.a.select_timeout - (time.time() - j.last_select_activity)
+                if remaining <= 0: break                        # idle (no answer, no keepalive) for the full timeout: fail open for real
+                if j.convert_ready.wait(min(remaining, 30)): break  # explicit /select or cancel arrived
             # Event.wait(timeout) timing out does NOT set the event -- only .set() does. Without
             # this, a /select that arrives after the timeout already fired would still find
             # convert_ready unset, pass S.select()'s "already closed?" check, and get a
@@ -378,6 +401,11 @@ def make_handler(S):
                 try: body = json.loads(self.rfile.read(n) or b'{}')
                 except ValueError: return self._json(400, dict(error='bad json'))
                 return self._json(200, dict(ok=S.select(j, body)))
+            m = re.match(r'^/jobs/(\w+)/keepalive$', self.path)
+            if m:
+                j = S.jobs.get(m.group(1))
+                if not j: return self._json(404, dict(error='not found'))
+                return self._json(200, dict(ok=S.keepalive(j)))
             self._json(404, dict(error='not found'))
         def do_PUT(self):
             if not self._auth(): return
