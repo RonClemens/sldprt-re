@@ -2,7 +2,7 @@
 """Local helper for progressive SolidWorks import (see docs/viewer-integration.md).
 usage: serve.py [--token T|auto] [--public-url https://tunnel] [--allow-host H] [--replay JOBDIR [--speed X]] [--port 8765] [--origin https://ronclemens.github.io] [--jobs N] [--timeout SEC] [--work DIR]
 POST /jobs (raw .sldprt/.sldasm/.zip body, header X-Filename) -> {job}; GET /jobs/<id>/events (SSE); GET /jobs/<id>/parts/<key>.glb;
-GET /jobs/<id>/assembly.glb; POST /jobs/<id>/cancel; GET /health. Binds to loopback only."""
+GET /jobs/<id>/assembly.glb; GET /jobs/<id>/docs/<n>.pdf; POST /jobs/<id>/cancel; GET /health. Binds to loopback only."""
 import argparse, hashlib, json, os, re, shutil, subprocess, sys, tempfile, threading, time, uuid
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -19,6 +19,7 @@ class Job:
         s.id = uuid.uuid4().hex[:12]; s.dir = os.path.join(root, s.id); os.makedirs(s.dir); s.name = name
         s.events = []; s.cv = threading.Condition(); s.cancel = False; s.procs = set(); s.done = False
         s.ready = {}      # key -> glb path
+        s.doc_files = []  # index -> extracted drawing PDF path (see GET /jobs/<id>/docs/<n>.pdf)
         s.t0 = time.time()
         s.convert_ready = threading.Event()  # set once the client has POSTed /select (or the wait times out)
         s.selected = None                    # None (not yet chosen) | 'all' | set of selected instance ids
@@ -222,6 +223,15 @@ class Server:
                     parts[k] = dict(key=k, file=os.path.basename(f), path=f, bytes=os.path.getsize(f))
                     inst.append(dict(id=len(inst), path=nm, part=k, name=nm, nha=None, level=1, matrix=np.eye(4).reshape(-1).tolist(), bbox=None, hidden=False, suppressed=False))
             j.parts = parts
+            # Drawing PDFs a Pack-and-Go bundled alongside the model: matched to a part purely by
+            # filename stem (same normalization as part_key() uses for .SLDPRT files), since that's
+            # the only link available -- there is no cross-reference for this in the component tree
+            # itself. Index-addressed rather than keyed in the URL so an arbitrary/duplicate PDF
+            # filename never needs its own sanitizing; the key->filename mapping is for the viewer
+            # to label and, on a collision, let the user pick among several candidates.
+            pdfs = walk(src, '.pdf'); j.doc_files = pdfs
+            docs = {}
+            for i, p in enumerate(pdfs): docs.setdefault(part_key(os.path.basename(p)), []).append(dict(idx=i, filename=os.path.basename(p)))
             # Pause here for the viewer's "pick which assemblies/parts to load" modal (large
             # imports only -- the viewer decides, this just waits): the client already has the
             # full instance/part list from the 'plan' event below, so this does not need to send
@@ -238,7 +248,7 @@ class Server:
             # assembly_refs comes back 0 against a real, present .sldasm, the component tree
             # itself has no sub-assembly nesting to find -- not a parsing bug.
             assembly_refs = sum(1 for i in inst if i.get('assembly'))
-            j.emit('plan', name=os.path.splitext(filename)[0], instances=inst, parts=[{k: v for k, v in p.items() if k not in ('path', 'bbox')} for p in parts.values()], missing=missing, skipped=getattr(j, 'skipped', []), virtual=dict(written=len(vrep['written']), unmatched=vrep['unmatched'], ambiguous=[a['name'] for a in vrep['ambiguous']]),
+            j.emit('plan', name=os.path.splitext(filename)[0], instances=inst, parts=[{k: v for k, v in p.items() if k not in ('path', 'bbox')} for p in parts.values()], missing=missing, skipped=getattr(j, 'skipped', []), virtual=dict(written=len(vrep['written']), unmatched=vrep['unmatched'], ambiguous=[a['name'] for a in vrep['ambiguous']]), docs=docs,
                    sldasm_files_found=len(asms), top_level_assemblies=[os.path.basename(a) for a in getattr(j, 'used_asms', [])], assembly_refs=assembly_refs, part_refs=len(inst) - assembly_refs)
             # A single flat wait can't tell "genuinely abandoned" from "a person still has the
             # 'choose what to load' modal open but got pulled away for a while" -- no fixed
@@ -432,9 +442,15 @@ def make_handler(S):
             if m:
                 u = S._up(m.group(1))
                 return self._json(200, dict(offset=S.upload_offset(u['id']), size=u['size'])) if u else self._json(404, dict(error='unknown upload'))
-            m = re.match(r'^/jobs/(\w+)/(events|assembly\.glb|parts/([\w.-]+)\.glb)$', self.path)
+            m = re.match(r'^/jobs/(\w+)/(events|assembly\.glb|parts/([\w.-]+)\.glb|docs/(\d+)\.pdf)$', self.path)
             j = S.jobs.get(m.group(1)) if m else None
             if not j: return self._json(404, dict(error='not found'))
+            if m.group(4) is not None:    # a drawing PDF, addressed by index (see run()'s docs map) rather than by its own filename
+                idx = int(m.group(4)); path = j.doc_files[idx] if 0 <= idx < len(j.doc_files) else None
+                if not path or not os.path.exists(path): return self._json(404, dict(error='not found'))
+                sz = os.path.getsize(path); self.send_response(200); self._cors(); self.send_header('Content-Type', 'application/pdf'); self.send_header('Content-Length', str(sz)); self.end_headers()
+                with open(path, 'rb') as f: shutil.copyfileobj(f, self.wfile)
+                return
             if m.group(2) == 'events':
                 self.send_response(200); self._cors(); self.send_header('Content-Type', 'text/event-stream'); self.send_header('Cache-Control', 'no-cache'); self.send_header('Connection', 'close'); self.end_headers()
                 i = int(self.headers.get('Last-Event-ID', -1)) + 1
