@@ -7,11 +7,13 @@ import argparse, json, os, subprocess, sys, tempfile, time, zipfile
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 SCHEMA = os.path.join(HERE, 'sch_13006_s_t.txt')
 def safe_extract(zpath, dest):
-    """extract only .sldprt/.sldasm members, refusing paths that escape dest"""
+    """extract only .sldprt/.sldasm/.pdf members, refusing paths that escape dest. PDFs are
+    drawing exports a Pack-and-Go can carry alongside the model they document -- kept so the
+    viewer can offer them, matched to a part by filename stem (see serve.py's part_key())."""
     n = 0; dest = os.path.realpath(dest)
     with zipfile.ZipFile(zpath) as z:
         for m in z.infolist():
-            if m.is_dir() or not m.filename.lower().endswith(('.sldprt', '.sldasm')): continue
+            if m.is_dir() or not m.filename.lower().endswith(('.sldprt', '.sldasm', '.pdf')): continue
             t = os.path.realpath(os.path.join(dest, m.filename))
             if os.path.commonpath([dest, t]) != dest: continue
             os.makedirs(os.path.dirname(t), exist_ok=True)

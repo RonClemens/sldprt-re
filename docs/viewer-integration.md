@@ -49,6 +49,7 @@ so `new THREE.Matrix4().fromArray(m)` applies directly.
 | `GET /jobs/{job}/events` | SSE stream of the events below (replays history on reconnect via `Last-Event-ID`). |
 | `GET /jobs/{job}/parts/{key}.glb` | One part, in part coordinates, shared by all of its instances. |
 | `GET /jobs/{job}/assembly.glb` | The assembly with whatever has finished so far (the "export partial" button). |
+| `GET /jobs/{job}/docs/{n}.pdf` | A drawing PDF the upload's Pack-and-Go bundled alongside the model (`n` = the index from `plan`'s `docs`, not the filename -- see below). |
 | `POST /jobs/{job}/cancel` | Stops workers; finished parts stay available. |
 | `POST /jobs/{job}/select` | Body `{"all": true}` or `{"instance_ids": [...]}`. Answers the pause described under `plan` below. Returns `{ok}`; `ok: false` means the job already passed the gate (done, or already answered) and this had no effect. |
 | `POST /jobs/{job}/keepalive` | No body. Bumps the `--select-timeout` clock while a "choose what to load" modal is still on screen (see "Selection gate" below). Returns `{ok}`; `ok: false` means the gate had already closed -- harmless, the next `select` call will surface that the normal way. |
@@ -58,7 +59,12 @@ so `new THREE.Matrix4().fromArray(m)` applies directly.
 
 - `plan` - sent within ~seconds, **before any geometry**. Built from the assembly's component tree (plain XML with a bounding
   box per component):
-  `{name, instances:[{id, path, part, name, nha, level, matrix, bbox:[min3,max3], hidden, suppressed, assembly?, key?, file?}], parts:[{key, file, bytes}], missing:[file], sldasm_files_found, top_level_assemblies:[file], assembly_refs, part_refs}`.
+  `{name, instances:[{id, path, part, name, nha, level, matrix, bbox:[min3,max3], hidden, suppressed, assembly?, key?, file?}], parts:[{key, file, bytes}], missing:[file], docs:{partKey:[{idx, filename}]}, sldasm_files_found, top_level_assemblies:[file], assembly_refs, part_refs}`.
+  `docs` maps a part key to the drawing PDF(s) the upload bundled under that same filename stem (matched purely by name --
+  there is no cross-reference for this in the component tree itself, so an oddly-named drawing simply won't match). Each
+  entry's `idx` addresses `GET /jobs/{job}/docs/{idx}.pdf`; `filename` is the original name, for display and for picking
+  among several candidates when more than one PDF normalizes to the same key. Empty (`{}`) when the upload had no PDFs,
+  or wasn't a `.zip` to begin with (a lone `.sldprt`/`.sldasm` upload has nothing alongside it to bundle).
   `id` is the stable per-instance index (0..n-1); it never changes for the life of the job. `level` is the indenture level
   (1 = direct child of the top assembly, incrementing per nesting level); `nha` is the "next higher assembly" -- the
   immediate parent's own key, `null` for a direct child of the top assembly. A row with `part: null` and `assembly: true`
@@ -141,6 +147,10 @@ so `new THREE.Matrix4().fromArray(m)` applies directly.
 8. **Unresolved parts toggle.** Boxes for parts that failed or never finished are controlled by a user toggle ("Show unresolved
    parts", on by default while importing). It applies to the 3D view, the B/W callout diagram and the assembly manual; when off,
    those parts are hidden and skipped in the parts list numbering used for output. They are never drawn as if they were real geometry.
+9. **Drawing PDFs.** On selecting a part (3D click, or the sidebar list), look up its `partKey` in `plan`'s `docs`; if present,
+   offer the matching PDF(s) -- a direct open for one match, a small picker (by `filename`) for more than one -- fetched from
+   `GET /jobs/{job}/docs/{idx}.pdf`. No match is the common case (not every part has its own drawing, and matching is by
+   filename stem only) and should be silent, not an error.
 
 ## 6. What this repo will deliver
 
