@@ -81,6 +81,21 @@ class Brep:
                 uv=np.vstack([uv[i]+(uv[i+1]-uv[i])*(np.arange(k[i])/k[i])[:,None] for i in range(len(k))]+[uv[-1:]])
             return sf.eval(uv[:,0],uv[:,1]),False
         raise NotImplementedError(t)
+    def _trimmed_sp_poly(s,tc):
+        """the arc of a periodic surface pcurve that its TRIMMED_CURVE selects: the trim parameters may run past the end of the period, which only the parameters (not the end points) can tell from the complementary arc"""
+        n=s.N[tc]; sp=s.N[n['basis_curve']]
+        if sp['name']!='SP_CURVE' or s.N[sp['b_curve']]['name']!='B_CURVE': return None
+        nb=Nurbs(s.N,s.N[sp['b_curve']]['nurbs'],False)
+        if not getattr(nb,'periodic',False) or nb.vd not in (2,3): return None
+        p1,p2=sorted((n['parm_1'],n['parm_2'])); per=nb.range[1]-nb.range[0]; p2=min(p2,p1+per)
+        m=max(16,int((p2-p1)/per*max(200,12*len(np.unique(nb.k)))))
+        uv=nb.curve(nb.range[0]+(np.linspace(p1,p2,m+1)-nb.range[0])%per)
+        sf=s.raw_surf(sp['surface'])
+        if sf.__class__.__name__=='Spun': uv=uv[:,::-1]
+        if sf.__class__.__name__!='Plane':
+            k=np.maximum(1,np.ceil(np.abs(np.diff(uv,axis=0)).max(1)/0.05)).astype(int)
+            uv=np.vstack([uv[i]+(uv[i+1]-uv[i])*(np.arange(k[i])/k[i])[:,None] for i in range(len(k))]+[uv[-1:]])
+        return sf.eval(uv[:,0],uv[:,1])
     def _refine_chart(s,P,n):
         """Parasolid stores an intersection curve as a coarse chart (chordal error often millimetres): insert midpoints and pull them onto both surfaces until the polyline follows the true curve"""
         ch=s.N[n['chart']]; ce=ch.get('chordal_error',0) or 0
@@ -130,7 +145,10 @@ class Brep:
             # a curve-less edge with vertices (a circle split in two on a revolved face): the half-edge's surface curve carries the geometry; keep the part between the vertices
             hc=s._halfedge_curves().get(e['halfedge']) or s._halfedge_curves().get(N[e['halfedge']]['other'])
             if hc is not None:
-                try: D,_=s.curve_poly(hc)
+                try:
+                    T=s._trimmed_sp_poly(hc) if np.linalg.norm(A-B)>1e-9 else None
+                    if T is not None: s.edge_cache[eid]=clip(T,A,B,False,False); return s.edge_cache[eid]
+                    D,_=s.curve_poly(hc)
                 except (AttributeError,NotImplementedError): D=None    # the pcurve lies on a surface we cannot evaluate (blend): fall back to the straight chord below
                 if D is not None:
                     per=bool(np.linalg.norm(D[0]-D[-1])<1e-9)
@@ -143,7 +161,7 @@ class Brep:
         else:
             D,per=s.curve_poly(cid)
             cn=N[cid]
-            if cn['name']=='INTERSECTION' and A is not None and B is not None and not per and len(D)>3 and np.linalg.norm(D[0]-D[-1])<1e-9:
+            if cn['name']=='INTERSECTION' and A is not None and B is not None and not per and len(D)>3 and np.linalg.norm(D[0]-D[-1])<max(1e-9,2e-3*np.linalg.norm(np.diff(D,axis=0),axis=1).sum()):    # (a stored chart closes to within its own sampling slack)
                 # a closed chart: its two end vertices can lie on either side of the seam, so open clipping would take the arc through the seam wrongly or reuse the other edge's stretch; go against the chart order
                 s.edge_cache[eid]=clip(D[:-1],B,A,True,False)[::-1]; return s.edge_cache[eid]    # the edge runs against the chart order (verified: edges sharing a chart then cover complementary stretches)
             if cn['name'] in ('CIRCLE','ELLIPSE'): per=True
@@ -152,7 +170,7 @@ class Brep:
             if A is None and B is None: flip=(cn['sense']=='-')
             pts=clip(D,A,B,per,flip)
             if per and A is not None and B is not None:
-                if cn['name']=='TRIMMED_CURVE' and N[base]['name']=='CIRCLE':
+                if cn['name']=='TRIMMED_CURVE' and N[base]['name'] in ('CIRCLE','ELLIPSE'):
                     # the trim parameters (radians on the circle) give the arc's true extent: when the rule picked the complementary arc, take the other one
                     span=abs(cn['parm_2']-cn['parm_1']); alt=clip(D,A,B,per,not flip)
                     if abs(_arc_extent(alt,N[base])-span)<abs(_arc_extent(pts,N[base])-span)-1e-3: pts=alt
@@ -189,7 +207,7 @@ class Brep:
 def _arc_extent(P,c):
     """angle swept by the polyline P about the circle node c"""
     nz=unit(c['normal']); x=unit(c['x_axis']); y=np.cross(nz,x); d=np.asarray(P)-np.array(c['centre'])
-    a=np.arctan2(d@y,d@x); return float(np.abs(np.diff(np.unwrap(a))).sum())
+    a=np.arctan2(d@y/c.get('minor_radius',1.0),d@x/c.get('major_radius',1.0)); return float(np.abs(np.diff(np.unwrap(a))).sum())    # (an ellipse is parametrised by its eccentric angle)
 def clip(D,A,B,per,flip):
     n=len(D)
     def proj(P):
