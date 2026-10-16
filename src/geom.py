@@ -160,19 +160,41 @@ class Spun(Surf):
     """surface of revolution: the profile curve turned about the axis through `base` (angle u measured from the profile's own position)"""
     periodic_u=True
     def __init__(s,N,n):
-        s.f,(s.v0,s.v1),s.pclosed=curve_fn(N,n['profile']); s.b=np.array(n['base']); s.a=unit(n['axis'])
+        s.b=np.array(n['base']); s.a=unit(n['axis']); s.line=None
         x=np.array(n['x_axis']); x=x-(x@s.a)*s.a; s.x=unit(x); s.y=np.cross(s.a,s.x)
+        c=N[n['profile']]
+        while c['name']=='TRIMMED_CURVE': c=N[c['basis_curve']]
+        if c['name']=='LINE' and s._init_line(c): return
+        s.f,(s.v0,s.v1),s.pclosed=curve_fn(N,n['profile'])
         m=2049 if s.pclosed else 1025; s.vg=np.linspace(s.v0,s.v1,m,endpoint=not s.pclosed); s.step=(s.v1-s.v0)/m
         rel=s.f(s.vg)-s.b; s.rz=np.stack([np.hypot(rel@s.x,rel@s.y),rel@s.a],-1)
         from scipy.spatial import cKDTree
         s.tree=cKDTree(s.rz)
+    def _init_line(s,c):
+        """a straight profile (cone / cylinder / plane of revolution) has an open-ended parameter range, so it is evaluated and inverted analytically:
+        v is the line parameter, the profile point sits at signed radius rho0 + v*dr along the fixed radial direction of the line"""
+        rel=np.array(c['pvec'])-s.b; d=unit(c['direction']); z0=rel@s.a; rp=rel-z0*s.a; dz=d@s.a; dp=d-dz*s.a; rho0=np.linalg.norm(rp)
+        if rho0>1e-12 and np.linalg.norm(np.cross(rp,dp))>1e-9*rho0*max(np.linalg.norm(dp),1e-30): return False    # skew to the axis: a hyperboloid
+        rh=rp/rho0 if rho0>1e-12 else (dp/np.linalg.norm(dp) if np.linalg.norm(dp)>1e-12 else s.x)
+        s.line=(z0,dz,rho0,d@rh,np.arctan2(rh@s.y,rh@s.x)); s.pclosed=False; s.v0,s.v1=0.0,0.0
+        return True
     def _rzang(s,v):
         rel=s.f(v)-s.b; px=rel@s.x; py=rel@s.y; return np.hypot(px,py),rel@s.a,np.arctan2(py,px)
     def eval(s,u,v):
-        u,v=np.broadcast_arrays(np.asarray(u,float),np.asarray(v,float)); r,z,a0=s._rzang(v); a=a0+u
+        u,v=np.broadcast_arrays(np.asarray(u,float),np.asarray(v,float))
+        if s.line:
+            z0,dz,rho0,dr,a0=s.line; r=rho0+v*dr; a=a0+u
+            return s.b+(z0+v*dz)[...,None]*s.a+r[...,None]*(np.cos(a)[...,None]*s.x+np.sin(a)[...,None]*s.y)
+        r,z,a0=s._rzang(v); a=a0+u
         return s.b+z[...,None]*s.a+r[...,None]*(np.cos(a)[...,None]*s.x+np.sin(a)[...,None]*s.y)
     def inv(s,P):
-        P=np.atleast_2d(np.asarray(P,float)); rel=P-s.b; px=rel@s.x; py=rel@s.y; q=np.stack([np.hypot(px,py),rel@s.a],-1)
+        P=np.atleast_2d(np.asarray(P,float)); rel=P-s.b; px=rel@s.x; py=rel@s.y
+        if s.line:
+            z0,dz,rho0,dr,a0=s.line; z=rel@s.a; rho=np.hypot(px,py)
+            if abs(dz)>1e-9: v=(z-z0)/dz; neg=(rho0+v*dr)<0    # which nappe of the cone the point is on
+            else: v=(rho-rho0)/dr; neg=np.zeros(len(P),bool)
+            u=np.arctan2(py,px)-a0+np.where(neg,np.pi,0.0); return np.stack([(u+np.pi)%TWO-np.pi,v],-1)
+        q=np.stack([np.hypot(px,py),rel@s.a],-1)
         v=s.vg[s.tree.query(q)[1]].copy(); h=max((s.v1-s.v0)*1e-6,1e-12)
         for _ in range(6):
             r0,z0,_=s._rzang(v); r1,z1,_=s._rzang(v+h); r2,z2,_=s._rzang(v-h); T=np.stack([r1-r2,z1-z2],-1)/(2*h)

@@ -68,7 +68,12 @@ class Brep:
             return s.curve_poly(n['basis_curve'],depth+1)
         if t=='SP_CURVE':
             uv,_=s.curve_poly(n['b_curve'],depth+1)
-            sf=s.surf(n['surface']); return sf.eval(uv[:,0],uv[:,1]),False
+            sf=s.surf(n['surface'])
+            if sf.__class__.__name__=='Spun': uv=uv[:,::-1]     # on a spun surface the pcurve is stored as (profile parameter, angle)
+            if sf.__class__.__name__!='Plane' and len(uv)>1:     # a linear pcurve (2 control points) is an arc on a revolved surface: sample it finely enough to follow the curvature
+                k=np.maximum(1,np.ceil(np.abs(np.diff(uv,axis=0)).max(1)/0.05)).astype(int)
+                uv=np.vstack([uv[i]+(uv[i+1]-uv[i])*(np.arange(k[i])/k[i])[:,None] for i in range(len(k))]+[uv[-1:]])
+            return sf.eval(uv[:,0],uv[:,1]),False
         raise NotImplementedError(t)
     # ---- edges
     def edge_vertices(s,eid):
@@ -95,6 +100,13 @@ class Brep:
                 D,_=s.curve_poly(hc)
                 if np.linalg.norm(D[0]-D[-1])>1e-9: D=np.vstack([D,D[:1]])
                 s.edge_cache[eid]=D; return D
+        if cid==1 and A is not None and B is not None:
+            # a curve-less edge with vertices (a circle split in two on a revolved face): the half-edge's surface curve carries the geometry; keep the part between the vertices
+            hc=s._halfedge_curves().get(e['halfedge']) or s._halfedge_curves().get(N[e['halfedge']]['other'])
+            if hc is not None:
+                D,_=s.curve_poly(hc); per=bool(np.linalg.norm(D[0]-D[-1])<1e-9)
+                if per: D=D[:-1]
+                s.edge_cache[eid]=clip(D,A,B,per,False); return s.edge_cache[eid]
         while base!=1 and N[base]['name']=='TRIMMED_CURVE': base=N[base]['basis_curve']    # a trimmed straight line is still just its two end points
         if cid==1 or N[base]['name']=='LINE':
             pts=np.array([A,B]) if A is not None and B is not None else None
@@ -107,7 +119,12 @@ class Brep:
             flip=(FLIPMODE==1 and N[cid]['sense']=='-') or (FLIPMODE==2 and N[cid]['sense']=='+')
             if A is None and B is None: flip=(cn['sense']=='-')
             pts=clip(D,A,B,per,flip)
-            if per and A is not None and B is not None: pts=pts[::-1]   # arcs: directed B->A (empirical, see notes)
+            if per and A is not None and B is not None:
+                if cn['name']=='TRIMMED_CURVE' and N[base]['name']=='CIRCLE':
+                    # the trim parameters (radians on the circle) give the arc's true extent: when the rule picked the complementary arc, take the other one
+                    span=abs(cn['parm_2']-cn['parm_1']); alt=clip(D,A,B,per,not flip)
+                    if abs(_arc_extent(alt,N[base])-span)<abs(_arc_extent(pts,N[base])-span)-1e-3: pts=alt
+                pts=pts[::-1]   # arcs: directed B->A (empirical, see notes)
         s.edge_cache[eid]=pts; return pts
     def face_loops_directed(s,fid):
         """loops as directed polylines, face on the LEFT when seen from the outward normal (verified on planes).
@@ -137,6 +154,10 @@ class Brep:
                 if h==h0: break
             loops.append(chain_undirected(segs)); l=L['next']
         return loops
+def _arc_extent(P,c):
+    """angle swept by the polyline P about the circle node c"""
+    nz=unit(c['normal']); x=unit(c['x_axis']); y=np.cross(nz,x); d=np.asarray(P)-np.array(c['centre'])
+    a=np.arctan2(d@y,d@x); return float(np.abs(np.diff(np.unwrap(a))).sum())
 def clip(D,A,B,per,flip):
     n=len(D)
     def proj(P):

@@ -10,6 +10,18 @@ from brep import Brep
 import tess
 from export import build_mesh, write_obj, write_glb
 MAGIC=bytes.fromhex('231dd571da8148a2a85898b21b89ef99')
+def inflate_chain(data,p):
+    """decompress the section whose 16-byte magic starts at data[p]: [u32 usize][u32 csize][zlib] chunks back to back (a body over
+    1 MiB continues in further chunks, mostly 4 KiB each). Stops at the first chunk that does not decode; returns (bytes, end offset)."""
+    out=[]; q=p+16
+    while q+8<=len(data):
+        us,cs=struct.unpack_from('<II',data,q)
+        if cs==0 or q+8+cs>len(data) or data[q+8:q+9]!=b'\x78': break
+        try: r=zlib.decompress(data[q+8:q+8+cs])
+        except Exception: break
+        if len(r)!=us: break
+        out.append(r); q+=8+cs
+    return b''.join(out),q
 def geometry_transmits(streams):
     """yield (stream_name, section_idx, transmit bytes) for geometry streams.
     *-Partition: [u32 len][section]... back to back. */LocalBodies (imported / multi-body parts): MFC-framed, so the same
@@ -19,17 +31,16 @@ def geometry_transmits(streams):
             for k,m in enumerate(re.finditer(re.escape(MAGIC),data)):
                 p=m.start()
                 if p+24>len(data): continue
-                cs=struct.unpack_from('<I',data,p+20)[0]
-                try: yield name,k,zlib.decompress(data[p+24:p+24+cs])
-                except Exception: continue
+                raw,_=inflate_chain(data,p)
+                if raw: yield name,k,raw
             continue
         if not name.endswith('-Partition'): continue
         pos=0;k=0
         while pos+4<=len(data):
             ln=struct.unpack_from('<I',data,pos)[0]; sec=data[pos+4:pos+4+ln]
             if sec[:16]!=MAGIC: break
-            try: raw=zlib.decompress(sec[24:])
-            except Exception: break
+            raw,_=inflate_chain(sec,0)
+            if not raw: break
             yield name,k,raw; pos+=4+ln;k+=1
 def fallback_transmits(streams):
     """last resort for parts whose Partition/LocalBodies hold no body (e.g. components imported from STEP): the feature history
@@ -45,7 +56,7 @@ def fallback_transmits(streams):
             if raw[:2]==b'PS': yield name,k,raw
 def is_ole2(path):
     with open(path,'rb') as f: return f.read(4)==b'\xd0\xcf\x11\xe0'
-CACHE_VERSION='5'    # bump when tessellation output changes (new surface types, boundary fixes) so stale cached meshes are not reused
+CACHE_VERSION='7'    # bump when tessellation output changes (new surface types, boundary fixes) so stale cached meshes are not reused
 def _cache_file(path,bbox):
     d=os.environ.get('SLDPRT_CACHE')
     if not d: return None
