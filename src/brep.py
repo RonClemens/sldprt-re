@@ -36,8 +36,13 @@ class Brep:
         s.truncated=bool(g.get('truncated')); s.g=g; s.N=g['nodes']; N=s.N
         s.surfs={}
         s.edge_cache={}
+    def raw_surf(s,fid):
+        if not hasattr(s,'_raw'): s._raw={}
+        if fid not in s._raw: s._raw[fid]=make_surface(s.N,fid)
+        return s._raw[fid]
     def surf(s,fid):
-        if fid not in s.surfs: s.surfs[fid]=make_surface(s.N,fid)
+        if fid not in s.surfs:
+            sf=s.raw_surf(fid); s.surfs[fid]=getattr(sf,'sphere',None) or sf    # a spun circle about its own diameter is meshed as the sphere it is
         return s.surfs[fid]
     # ---- dense polylines of curves
     def curve_poly(s,cid,depth=0):
@@ -68,7 +73,7 @@ class Brep:
             return s.curve_poly(n['basis_curve'],depth+1)
         if t=='SP_CURVE':
             uv,_=s.curve_poly(n['b_curve'],depth+1)
-            sf=s.surf(n['surface'])
+            sf=s.raw_surf(n['surface'])     # pcurve parameters belong to the stored (spun) form
             if sf.__class__.__name__=='Spun': uv=uv[:,::-1]     # on a spun surface the pcurve is stored as (profile parameter, angle)
             if sf.__class__.__name__!='Plane' and len(uv)>1:     # a linear pcurve (2 control points) is an arc on a revolved surface: sample it finely enough to follow the curvature
                 k=np.maximum(1,np.ceil(np.abs(np.diff(uv,axis=0)).max(1)/0.05)).astype(int)
@@ -114,6 +119,9 @@ class Brep:
         else:
             D,per=s.curve_poly(cid)
             cn=N[cid]
+            if cn['name']=='INTERSECTION' and A is not None and B is not None and not per and len(D)>3 and np.linalg.norm(D[0]-D[-1])<1e-9:
+                # a closed chart: its two end vertices can lie on either side of the seam, so open clipping would take the arc through the seam wrongly or reuse the other edge's stretch; go against the chart order
+                s.edge_cache[eid]=clip(D[:-1],B,A,True,False)[::-1]; return s.edge_cache[eid]    # the edge runs against the chart order (verified: edges sharing a chart then cover complementary stretches)
             if cn['name'] in ('CIRCLE','ELLIPSE'): per=True
             if cn['name']=='INTERSECTION' and A is None and B is None: per=False
             flip=(FLIPMODE==1 and N[cid]['sense']=='-') or (FLIPMODE==2 and N[cid]['sense']=='+')

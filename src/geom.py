@@ -165,6 +165,11 @@ class Spun(Surf):
         c=N[n['profile']]
         while c['name']=='TRIMMED_CURVE': c=N[c['basis_curve']]
         if c['name']=='LINE' and s._init_line(c): return
+        s.sphere=None
+        if c['name']=='CIRCLE':     # a circle centred on the axis, in a plane holding the axis, is a sphere: its (profile, angle) inverse double-covers the surface and jumps between the two sheets
+            rel=np.array(c['centre'])-s.b
+            if np.linalg.norm(rel-(rel@s.a)*s.a)<1e-9 and abs(unit(c['normal'])@s.a)<1e-9:
+                s.sphere=Sphere(dict(centre=np.array(c['centre']),radius=c['radius'],axis=s.a,x_axis=s.x))
         s.f,(s.v0,s.v1),s.pclosed=curve_fn(N,n['profile'])
         m=2049 if s.pclosed else 1025; s.vg=np.linspace(s.v0,s.v1,m,endpoint=not s.pclosed); s.step=(s.v1-s.v0)/m
         rel=s.f(s.vg)-s.b; s.rz=np.stack([np.hypot(rel@s.x,rel@s.y),rel@s.a],-1)
