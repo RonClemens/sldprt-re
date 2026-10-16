@@ -83,10 +83,15 @@ def _strip_with_holes(sf,wuv,wL,wws,huv,hL):
     for uv,L in zip(huv,hL):
         u,_=unwrap1(uv[:,0]); u=u+TWO*np.floor((u0+TWO/2-u.mean())/TWO+0.5)
         holes2.append(np.column_stack([u,uv[:,1]])); holes3.append(L)
-    h=2*np.arccos(max(0,1-TOL/sf.r))
-    rr=refine_uv(sf,[poly]+holes2,[P3]+holes3,h,sf.r*h*4,np.array([sf.r,1.0]),aniso=True)
+    if hasattr(sf,'r'): R,vs=sf.r,1.0
+    else:     # a surface of revolution: radius varies along the profile, and its parameter is not a length
+        rho=np.concatenate([np.hypot((L-sf.b)@sf.x,(L-sf.b)@sf.y) for L in [P3]+holes3]); R=float(rho.max())
+        pf=sf.f(sf.vg); vs=float(np.linalg.norm(np.diff(pf,axis=0),axis=1).sum()/max(sf.v1-sf.v0,1e-300)) if getattr(sf,'line',None) is None else 1.0
+    h=2*np.arccos(max(0,1-TOL/R))
+    S=np.array([R,vs])
+    rr=refine_uv(sf,[poly]+holes2,[P3]+holes3,h,R*h*4/vs,S,aniso=True)
     if rr is None:
-        S=np.array([sf.r,1.0]); rr=_polygon_faces([poly*S]+[x*S for x in holes2],[P3]+holes3)
+        rr=_polygon_faces([poly*S]+[x*S for x in holes2],[P3]+holes3)
     return refine_periodic_edges(sf,rr[0],rr[1],h)
 def refine_periodic_edges(sf,X,T,hmax,max_iter=12):
     """Conforming red-green subdivision of interior edges whose span in the periodic u parameter exceeds hmax
@@ -100,12 +105,11 @@ def refine_periodic_edges(sf,X,T,hmax,max_iter=12):
         for t in T:
             for k in range(3):
                 e=tuple(sorted((t[k],t[(k+1)%3]))); cnt[e]=cnt.get(e,0)+1
-        split={}
-        for e,c in cnt.items():
-            if c==2 and span(*e)>hmax:
-                a,b=e; um=U[a]+((U[b]-U[a]+np.pi)%TWO-np.pi)/2; vm=(V[a]+V[b])/2
-                split[e]=len(X); X.append(np.asarray(sf.eval(np.array([um]),np.array([vm])),float).reshape(3)); U.append(um); V.append(vm)
-        if not split: break
+        split={}; E=[e for e,c in cnt.items() if c==2 and span(*e)>hmax]
+        if not E: break
+        ua=np.array([U[a]+((U[b]-U[a]+np.pi)%TWO-np.pi)/2 for a,b in E]); va=np.array([(V[a]+V[b])/2 for a,b in E])
+        Pm=np.asarray(sf.eval(ua,va),float).reshape(-1,3)    # one batched surface evaluation per round
+        for e,um,vm,pm in zip(E,ua,va,Pm): split[e]=len(X); X.append(pm); U.append(um); V.append(vm)
         NT=[]
         for t in T:
             m=[split.get(tuple(sorted((t[k],t[(k+1)%3])))) for k in range(3)]   # m[k] = midpoint of edge t[k]->t[k+1]
@@ -278,6 +282,62 @@ def _bsurf_band_ok(sf,loops3):
     wi=1 if sf.nb.pv else 0; rg=sf.nb.vrange if wi else sf.nb.urange; P=rg[1]-rg[0]
     ws=[unwrap1(sf.inv(L)[:,wi],P)[1] for L in loops3]; os_=[unwrap1(sf.inv(L)[:,1-wi],1e30)[1] for L in loops3]
     return all(abs(w)==1 for w in ws)
+def _sphere_minus_caps(sf,loops3):
+    """a sphere face whose every loop bounds a cap that is cut out (a bead with several holes) has no outer boundary in lat/long. Sample the whole sphere evenly,
+    drop the samples inside or near the caps, triangulate the rest with the sphere's convex hull and ring-fill each hole in a stereographic plane about the cap."""
+    from scipy.spatial import ConvexHull
+    r=sf.r; d=2*np.arccos(max(0,1-TOL/r)); d=max(d,1e-3)
+    n=int(min(60000,max(60,np.ceil(4*np.pi/(0.866*d*d)))))
+    k=np.arange(n)+0.5; ph=np.arccos(1-2*k/n); th=np.pi*(1+5**0.5)*k
+    U=np.column_stack([np.cos(th)*np.sin(ph),np.sin(th)*np.sin(ph),np.cos(ph)])
+    hull=ConvexHull(U).simplices
+    out=(np.cross(U[hull[:,1]]-U[hull[:,0]],U[hull[:,2]]-U[hull[:,0]])*U[hull].sum(1)).sum(1)<0     # simplices come unoriented: make them all face outward
+    hull=np.where(out[:,None],hull[:,[0,2,1]],hull)
+    caps=[]; LU=[(L-sf.c)/r for L in loops3]; cm=[Lu.mean(0) for Lu in LU]
+    for i,Lu in enumerate(LU):
+        c=cm[i]; nc=np.linalg.norm(c)
+        if nc<0.2:     # a great circle: the face lies on the side of the other loops, so the cut-out cap is the opposite hemisphere
+            others=[cm[j]/max(np.linalg.norm(cm[j]),1e-9) for j in range(len(LU)) if j!=i and np.linalg.norm(cm[j])>=0.2]
+            if not others: raise ValueError('sphere loop is not a cap')
+            c=np.linalg.svd(Lu-Lu.mean(0),full_matrices=False)[2][2]; c=-c if c@np.sum(others,0)>0 else c; nc=1.0
+        c=c/nc; e1=np.cross(c,[1,0,0] if abs(c[0])<0.9 else [0,1,0]); e1/=np.linalg.norm(e1); e2=np.cross(c,e1)
+        proj=lambda V,c=c,e1=e1,e2=e2: np.column_stack([V@e1,V@e2])/np.maximum(1+V@c,1e-9)[:,None]
+        caps.append((c,proj,Lu))
+    keep=np.ones(n,bool)
+    for c,proj,Lu in caps:
+        keep&=~_pip(proj(U),proj(Lu))
+        keep&=_dist_to_poly(U,Lu)>1.2*d
+    tri=hull[keep[hull].all(1)]
+    while True:     # trim ragged spots until every boundary vertex has exactly one way out
+        de=set()
+        for tr in tri:
+            for q in range(3): de.add((tr[q],tr[(q+1)%3]))
+        nxt={}
+        for a,b in de:
+            if (b,a) not in de: nxt.setdefault(a,[]).append(b)
+        bad={a for a,v in nxt.items() if len(v)!=1}
+        if not bad: break
+        tri=tri[~np.isin(tri,list(bad)).any(1)]
+        if len(tri)==0: raise ValueError('sphere cap ring is not simple')
+    cycles=[]; seen=set()
+    for s0 in list(nxt):
+        if s0 in seen: continue
+        cyc=[s0]; seen.add(s0)
+        while nxt[cyc[-1]][0]!=s0:
+            if nxt[cyc[-1]][0] in seen: raise ValueError('sphere cap ring is not simple')
+            cyc.append(nxt[cyc[-1]][0]); seen.add(cyc[-1])
+        cycles.append(cyc)
+    if len(cycles)!=len(caps): raise ValueError('sphere cap rings do not match the holes')
+    used=sorted({int(x) for tr in tri for x in tr}); gidx={u:i for i,u in enumerate(used)}
+    X=[sf.c+r*U[used]]; T=[np.vectorize(gidx.get)(tri)]; base=len(used)
+    for cyc in cycles:
+        ci=int(np.argmin([_dist_to_poly(U[cyc],Lu).mean() for _,_,Lu in caps])); c,proj,Lu=caps[ci]    # the hole this ring hugs
+        L=loops3[ci]; cu=U[cyc]
+        XYZ,tf=_polygon_faces([proj(cu),proj(Lu)],[sf.c+r*cu,L])
+        remap={i:gidx[cyc[i]] for i in range(len(cyc))}
+        for i in range(len(cyc),len(XYZ)): remap[i]=base; base+=1; X.append(XYZ[i][None])
+        T.append(np.vectorize(remap.get)(np.asarray(tf)))
+    return np.vstack(X),np.vstack(T)
 def _closed_face(sf):
     """a face without any boundary loop (full torus / sphere / closed revolution): mesh the whole parametric domain, wrapping at the seams"""
     kind=sf.__class__.__name__
@@ -326,6 +386,15 @@ def tess_face(b,fid):
                 X2,t2=_torus_band(sf,uvs,loops3,True)
                 if _inside_bbox(X2,bbox): X,t=X2,t2; info['mode']+='(long)'
             info['n']=len(t); return X,t,info
+        if len(loops3)==2 and all(abs(w[0])==1 and w[1]==0 for w in winds):
+            # two rings around the torus axis at different tube angles: a zone of the torus (inner or outer wall); the bounding box picks which of the two zones
+            info['mode']='torus-zone'; bbox=getattr(b,'bbox',None); res=[]
+            for lw in (False,True):
+                oA,oB=[np.arctan2(np.sin(u[:,1]).mean(),np.cos(u[:,1]).mean()) for u in uvs]; d=abs((oB-oA+np.pi)%TWO-np.pi)
+                if lw: d=TWO-d
+                step=2*np.arccos(max(0.0,1-TOL/sf.r)); res.append(_band(sf,uvs,loops3,0,TWO,max(1,int(np.ceil(d/step))),True,lw))
+                if _inside_bbox(res[-1][0],bbox): break
+            X,t=res[-1] if _inside_bbox(res[-1][0],bbox) else res[0]; info['n']=len(t); return X,t,info
         if any(w!=(0,0) for w in winds):
             info['mode']='axis'; l2=[np.stack([(L-sf.c)@sf.x,(L-sf.c)@sf.y],-1) for L in loops3]
             X,t=_polygon_faces(l2,loops3)
@@ -345,14 +414,22 @@ def tess_face(b,fid):
         uvs=[sf.inv(L) for L in loops3]; winds=[unwrap1(u[:,0])[1] for u in uvs]
         if any(winds):
             info['mode']='axis'; l2=[np.stack([(L-sf.c)@sf.x,(L-sf.c)@sf.y],-1) for L in loops3]
-            X,t=_polygon_faces(l2,loops3)
+            try: X,t=_polygon_faces(l2,loops3)
+            except ValueError:
+                if len(loops3)<2: raise
+                X,t=_sphere_minus_caps(sf,loops3); info['mode']='sphere-caps'
         else:
             l2=[]
             for uv in uvs: uu,_=unwrap_loop(uv); l2.append(uu)
             ref=l2[0][:,0].mean(); l2=[np.column_stack([uv[:,0]+TWO*np.round((ref-uv[:,0].mean())/TWO),uv[:,1]]) for uv in l2]
-            h=2*np.arccos(max(0,1-TOL/sf.r)); rr=refine_uv(sf,l2,loops3,h,h,np.array([sf.r*max(np.cos(np.mean([p[:,1].mean() for p in l2])),0.2),sf.r]))
-            if rr is not None: info['mode']='sphere-refined'; X,t=rr
-            else: X,t=_polygon_faces(l2,loops3)
+            h=2*np.arccos(max(0,1-TOL/sf.r))
+            try:
+                rr=refine_uv(sf,l2,loops3,h,h,np.array([sf.r*max(np.cos(np.mean([p[:,1].mean() for p in l2])),0.2),sf.r]))
+                if rr is not None: info['mode']='sphere-refined'; X,t=rr
+                else: X,t=_polygon_faces(l2,loops3)
+            except ValueError:
+                if len(loops3)<2: raise
+                X,t=_sphere_minus_caps(sf,loops3); info['mode']='sphere-caps'
     elif kind=='BSurf' and (sf.nb.pu or sf.nb.pv) and len(loops3)==2 and _bsurf_band_ok(sf,loops3):
         wi=1 if sf.nb.pv else 0; rg=sf.nb.vrange if wi else sf.nb.urange; deg=sf.nb.du if wi else sf.nb.dv
         X,t=_band(sf,[sf.inv(L) for L in loops3],loops3,wi,rg[1]-rg[0],1 if deg==1 else 8); info['mode']='bsurf-band'
@@ -360,6 +437,16 @@ def tess_face(b,fid):
         per=getattr(sf,'periodic_u',False)
         if kind in ('Cylinder','Swept','Spun'):
             uvs=[sf.inv(L) for L in loops3]; ws=[unwrap1(u[:,0])[1] for u in uvs]
+            wi=[k for k,w in enumerate(ws) if abs(w)==1]
+            if kind=='Spun' and len(loops3)==2 and getattr(sf,'pclosed',False) and not sf.line and all(ws[k]==0 and abs(unwrap1(uvs[k][:,1],sf.v1-sf.v0)[1])==1 for k in range(2)):
+                # a torus-like spun wall between two profile rings (each winds once around the closed profile, at different angles)
+                P=sf.v1-sf.v0; step=2*np.arccos(max(0.0,1-TOL/max(float(sf.rz[:,0].max()),1e-3)))
+                d=abs((np.arctan2(np.sin(uvs[1][:,0]).mean(),np.cos(uvs[1][:,0]).mean())-np.arctan2(np.sin(uvs[0][:,0]).mean(),np.cos(uvs[0][:,0]).mean())+np.pi)%TWO-np.pi)
+                X,t=_band(sf,uvs,loops3,1,P,max(1,int(np.ceil(d/step))),True); info['mode']='spun-band'; info['n']=len(t); return X,t,info
+            if kind=='Spun' and len(wi)==2 and len(loops3)>2 and all(ws[k]==0 for k in range(len(ws)) if k not in wi):
+                X,t=_strip_with_holes(sf,[uvs[k] for k in wi],[loops3[k] for k in wi],[ws[k] for k in wi],
+                                      [uvs[k] for k in range(len(uvs)) if k not in wi],[loops3[k] for k in range(len(uvs)) if k not in wi])
+                info['mode']='strip-holes'; info['n']=len(t); return X,t,info
             if kind=='Spun' and any(abs(w)==1 for w in ws) and not (len(loops3)==2 and all(abs(w)==1 for w in ws)):
                 info['mode']='axis'; l2=[np.stack([(L-sf.b)@sf.x,(L-sf.b)@sf.y],-1) for L in loops3]      # a loop around the pole of a dome: flatten along the axis
                 X,t=_polygon_faces(l2,loops3); info['n']=len(t); return X,t,info
