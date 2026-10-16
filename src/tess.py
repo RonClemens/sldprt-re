@@ -278,10 +278,36 @@ def _bsurf_band_ok(sf,loops3):
     wi=1 if sf.nb.pv else 0; rg=sf.nb.vrange if wi else sf.nb.urange; P=rg[1]-rg[0]
     ws=[unwrap1(sf.inv(L)[:,wi],P)[1] for L in loops3]; os_=[unwrap1(sf.inv(L)[:,1-wi],1e30)[1] for L in loops3]
     return all(abs(w)==1 for w in ws)
+def _closed_face(sf):
+    """a face without any boundary loop (full torus / sphere / closed revolution): mesh the whole parametric domain, wrapping at the seams"""
+    kind=sf.__class__.__name__
+    if kind=='Torus': ru,rv=sf.R+sf.r,sf.r; v0,v1,vper=-np.pi,np.pi,True
+    elif kind=='Sphere': ru,rv=sf.r,sf.r; v0,v1,vper=-np.pi/2,np.pi/2,False
+    elif kind=='Spun' and sf.pclosed:
+        v0,v1,vper=sf.v0,sf.v1,True; pc=sf.f(np.linspace(v0,v1,257)); rv=max(np.linalg.norm(np.diff(pc,axis=0),axis=1).sum()/TWO,1e-9)
+        ru=max(float(sf.rz[:,0].max()),rv)
+    else: raise NotImplementedError('face without loops on '+kind)
+    ang=lambda r: int(np.ceil(TWO/(2*np.arccos(max(0,1-TOL/r)))))
+    nu=min(max(24,ang(ru)),512); nv=min(max(16,ang(rv)),512)
+    u=np.arange(nu)*TWO/nu
+    if vper: v=v0+np.arange(nv)*(v1-v0)/nv; rows=nv
+    else: v=np.linspace(v0,v1,nv+1)[1:-1]; rows=len(v)       # sphere: the two poles are single vertices
+    U,V=np.meshgrid(u,v); X=sf.eval(U.ravel(),V.ravel()).reshape(-1,3)
+    idx=lambda i,j: (i%rows)*nu+(j%nu)
+    t=[]
+    for i in range(rows if vper else rows-1):
+        for j in range(nu):
+            a,b,c,d=idx(i,j),idx(i,j+1),idx(i+1,j+1),idx(i+1,j); t+=[(a,b,c),(a,c,d)]
+    if not vper:
+        X=np.vstack([X,sf.eval(np.array([0.0]),np.array([v0])).reshape(1,3),sf.eval(np.array([0.0]),np.array([v1])).reshape(1,3)]); s0,n0=len(X)-2,len(X)-1
+        for j in range(nu): t+=[(s0,idx(0,j+1),idx(0,j)),(n0,idx(rows-1,j),idx(rows-1,j+1))]
+    return X,np.array(t)
 def tess_face(b,fid):
     N=b.N; f=N[fid]; sf=b.surf(f['surface'])
     loops3=b.face_loops(fid); kind=sf.__class__.__name__
     info=dict(mode='uv')
+    if not loops3:
+        info['mode']='closed'; X,t=_closed_face(sf); info['n']=len(t); return X,t,info
     if kind=='Cone':
         info['mode']='axis'; l2=[np.stack([(L-sf.p)@sf.x,(L-sf.p)@sf.y],-1) for L in loops3]
         X,t=_polygon_faces(l2,loops3)

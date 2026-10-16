@@ -114,7 +114,9 @@ class Brep:
         halfedges are walked via 'forward'; each edge polyline runs A->B, reversed when the halfedge sense is '-'."""
         N=s.N; f=N[fid]; loops=[]; l=f['loop']
         while l!=1:
-            L=N[l]; h=h0=L['halfedge']; segs=[]
+            L=N[l]
+            if N[L['halfedge']]['edge']==1: l=L['next']; continue    # vertex loop (cone apex, sphere pole): a point, not a boundary
+            h=h0=L['halfedge']; segs=[]
             while True:
                 H=N[h]; p=s.edge_poly(H['edge'])
                 segs.append(p[::-1] if H['sense']=='-' else p); h=H['forward']
@@ -127,7 +129,9 @@ class Brep:
     def face_loops(s,fid):
         N=s.N; f=N[fid]; loops=[]; l=f['loop']
         while l!=1:
-            L=N[l]; h=h0=L['halfedge']; segs=[]
+            L=N[l]
+            if N[L['halfedge']]['edge']==1: l=L['next']; continue    # vertex loop (cone apex, sphere pole): a point, not a boundary
+            h=h0=L['halfedge']; segs=[]
             while True:
                 H=N[h]; segs.append(s.edge_poly(H['edge'])); h=H['backward']
                 if h==h0: break
