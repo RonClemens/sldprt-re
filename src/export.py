@@ -1,4 +1,5 @@
 import json, struct, numpy as np
+from brep import TOL
 def build_mesh(b, tess_face, log=print):
     N=b.N
     # body colour
@@ -14,7 +15,9 @@ def build_mesh(b, tess_face, log=print):
         if f['name']!='FACE': continue
         try:
             X,t,info=tess_face(b,fid); t=np.asarray(t,int).reshape(-1,3); X=np.asarray(X,float).reshape(-1,3)
-            if len(t)==0: raise ValueError('no triangles produced')
+            if len(t)==0:
+                if len(X) and np.ptp(X,axis=0).max()<5*TOL: continue    # a sliver face thinner than the chord tolerance has nothing to draw
+                raise ValueError('no triangles produced')
             bb=getattr(b,'bbox',None); outside=False
             if bb is not None:    # a face whose triangles leave the part's recorded bounding box was probably traced wrongly (long way round an arc, ...)
                 lo,hi=np.array(bb[0]),np.array(bb[1]); mg=0.05*(hi-lo)+1e-3

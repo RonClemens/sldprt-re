@@ -68,6 +68,7 @@ class Brep:
             return (simplify(P,TOL) if COARSE else P),bool(getattr(nb,'periodic',False))     # a periodic B-curve is a closed loop, like a circle
         if t=='INTERSECTION':
             P=np.array(N[n['chart']]['hvec'],float)
+            P=s._refine_chart(P,n)
             return (simplify(P,TOL) if COARSE else P),False
         if t=='TRIMMED_CURVE':
             return s.curve_poly(n['basis_curve'],depth+1)
@@ -80,6 +81,26 @@ class Brep:
                 uv=np.vstack([uv[i]+(uv[i+1]-uv[i])*(np.arange(k[i])/k[i])[:,None] for i in range(len(k))]+[uv[-1:]])
             return sf.eval(uv[:,0],uv[:,1]),False
         raise NotImplementedError(t)
+    def _refine_chart(s,P,n):
+        """Parasolid stores an intersection curve as a coarse chart (chordal error often millimetres): insert midpoints and pull them onto both surfaces until the polyline follows the true curve"""
+        ch=s.N[n['chart']]; ce=ch.get('chordal_error',0) or 0
+        if ce<=TOL or len(P)<2: return P
+        try:
+            S=[s.raw_surf(x) for x in n['surface'] if x!=1]
+            if len(S)!=2 or not all(hasattr(x,'inv') for x in S): return P
+            lv=int(min(6,np.ceil(np.log(ce/TOL)/np.log(4))))
+            for _ in range(lv):
+                M=(P[:-1]+P[1:])/2
+                for _ in range(8):     # Newton step onto both surfaces at once (alternating projections crawl when they meet at a shallow angle)
+                    nn=[];bb=[]
+                    for x in S:
+                        uv=x.inv(M); v=x.eval(uv[:,0],uv[:,1])-M; nr=x.normal_raw(uv[:,0],uv[:,1]); nn.append(nr); bb.append((v*nr).sum(1))
+                    n1,n2=nn; c=(n1*n2).sum(1); det=np.maximum(1-c*c,1e-12)
+                    a=(bb[0]-c*bb[1])/det; b2=(bb[1]-c*bb[0])/det     # minimal-norm delta = a*n1+b2*n2 with n1.delta=bb0, n2.delta=bb1
+                    M=M+a[:,None]*n1+b2[:,None]*n2
+                Q=np.empty((2*len(P)-1,3)); Q[0::2]=P; Q[1::2]=M; P=Q
+            return P
+        except (AttributeError,NotImplementedError,ValueError): return P
     # ---- edges
     def edge_vertices(s,eid):
         N=s.N; e=N[eid]; h=N[e['halfedge']]
@@ -109,9 +130,12 @@ class Brep:
             # a curve-less edge with vertices (a circle split in two on a revolved face): the half-edge's surface curve carries the geometry; keep the part between the vertices
             hc=s._halfedge_curves().get(e['halfedge']) or s._halfedge_curves().get(N[e['halfedge']]['other'])
             if hc is not None:
-                D,_=s.curve_poly(hc); per=bool(np.linalg.norm(D[0]-D[-1])<1e-9)
-                if per: D=D[:-1]
-                s.edge_cache[eid]=clip(D,A,B,per,False); return s.edge_cache[eid]
+                try: D,_=s.curve_poly(hc)
+                except (AttributeError,NotImplementedError): D=None    # the pcurve lies on a surface we cannot evaluate (blend): fall back to the straight chord below
+                if D is not None:
+                    per=bool(np.linalg.norm(D[0]-D[-1])<1e-9)
+                    if per: D=D[:-1]
+                    s.edge_cache[eid]=clip(D,A,B,per,False); return s.edge_cache[eid]
         while base!=1 and N[base]['name']=='TRIMMED_CURVE': base=N[base]['basis_curve']    # a trimmed straight line is still just its two end points
         if cid==1 or N[base]['name']=='LINE':
             pts=np.array([A,B]) if A is not None and B is not None else None
