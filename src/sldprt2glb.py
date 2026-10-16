@@ -56,7 +56,7 @@ def fallback_transmits(streams):
             if raw[:2]==b'PS': yield name,k,raw
 def is_ole2(path):
     with open(path,'rb') as f: return f.read(4)==b'\xd0\xcf\x11\xe0'
-CACHE_VERSION='8'    # bump when tessellation output changes (new surface types, boundary fixes) so stale cached meshes are not reused
+CACHE_VERSION='9'    # bump when tessellation output changes (new surface types, boundary fixes) so stale cached meshes are not reused
 def _cache_file(path,bbox):
     d=os.environ.get('SLDPRT_CACHE')
     if not d: return None
