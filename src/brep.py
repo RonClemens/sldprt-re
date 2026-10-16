@@ -173,7 +173,8 @@ def clip(D,A,B,per,flip):
         if (iA,tA)<=(iB,tB): mid=D[iA+1:iB+1]; out=np.vstack([[A],mid,[B]])
         else: mid=D[iB+1:iA+1][::-1]; out=np.vstack([[A],mid,[B]])
     else:
-        if (iA,tA)<=(iB,tB): mid=D[iA+1:iB+1]
+        if np.linalg.norm(np.asarray(A)-np.asarray(B))<1e-9: mid=np.vstack([D[iA+1:],D[:iA+1]])    # one vertex closes the whole ring
+        elif (iA,tA)<=(iB,tB): mid=D[iA+1:iB+1]
         else: mid=np.vstack([D[iA+1:],D[:iB+1]])
         out=np.vstack([[A],mid,[B]])
     if flip: out=out[::-1]
