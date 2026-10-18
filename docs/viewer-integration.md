@@ -50,6 +50,7 @@ so `new THREE.Matrix4().fromArray(m)` applies directly.
 | `GET /jobs/{job}/parts/{key}.glb` | One part, in part coordinates, shared by all of its instances. |
 | `GET /jobs/{job}/assembly.glb` | The assembly with whatever has finished so far (the "export partial" button). |
 | `GET /jobs/{job}/docs/{n}.pdf` | A drawing PDF the upload's Pack-and-Go bundled alongside the model (`n` = the index from `plan`'s `docs`, not the filename -- see below). |
+| `GET /jobs/{job}/sheets/{n}.png` | The 640x480 preview image of one sheet of a SolidWorks drawing (`.SLDDRW`) the upload carried (`n` = the `idx` from the `drawings` event). |
 | `POST /jobs/{job}/cancel` | Stops workers; finished parts stay available. |
 | `POST /jobs/{job}/select` | Body `{"all": true}` or `{"instance_ids": [...]}`. Answers the pause described under `plan` below. Returns `{ok}`; `ok: false` means the job already passed the gate (done, or already answered) and this had no effect. |
 | `POST /jobs/{job}/keepalive` | No body. Bumps the `--select-timeout` clock while a "choose what to load" modal is still on screen (see "Selection gate" below). Returns `{ok}`; `ok: false` means the gate had already closed -- harmless, the next `select` call will surface that the normal way. |
@@ -60,6 +61,11 @@ so `new THREE.Matrix4().fromArray(m)` applies directly.
 - `plan` - sent within ~seconds, **before any geometry**. Built from the assembly's component tree (plain XML with a bounding
   box per component):
   `{name, instances:[{id, path, part, name, nha, level, matrix, bbox:[min3,max3], hidden, suppressed, assembly?, key?, file?}], parts:[{key, file, bytes}], missing:[file], docs:{partKey:[{idx, filename}]}, sldasm_files_found, top_level_assemblies:[file], assembly_refs, part_refs}`.
+- `drawings` (sent once, a little after `plan`, only when the upload held `.SLDDRW` files; read alongside the conversion):
+  `{drawings:[{key, filename, sheets:[{idx, name, w, h}], refs:[partKey]}]}`. `key` is the drawing's file name run through the same
+  normalization as a part key, so match it to a part or assembly by name exactly as `docs` is; `refs` are the part keys of the models the
+  drawing lists as referenced (its components, not a per-sheet link: the file does not record which model each sheet shows). Each sheet's
+  `idx` addresses `GET /jobs/{job}/sheets/{idx}.png`.
   `docs` maps a part key to the drawing PDF(s) the upload bundled under that same filename stem (matched purely by name --
   there is no cross-reference for this in the component tree itself, so an oddly-named drawing simply won't match). Each
   entry's `idx` addresses `GET /jobs/{job}/docs/{idx}.pdf`; `filename` is the original name, for display and for picking
