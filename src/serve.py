@@ -2,7 +2,7 @@
 """Local helper for progressive SolidWorks import (see docs/viewer-integration.md).
 usage: serve.py [--token T|auto] [--public-url https://tunnel] [--allow-host H] [--replay JOBDIR [--speed X]] [--port 8765] [--origin https://ronclemens.github.io] [--jobs N] [--timeout SEC] [--work DIR]
 POST /jobs (raw .sldprt/.sldasm/.zip body, header X-Filename) -> {job}; GET /jobs/<id>/events (SSE); GET /jobs/<id>/parts/<key>.glb;
-GET /jobs/<id>/assembly.glb; GET /jobs/<id>/docs/<n>.pdf; POST /jobs/<id>/cancel; GET /health. Binds to loopback only."""
+GET /jobs/<id>/assembly.glb; GET /jobs/<id>/docs/<n>.pdf; GET /jobs/<id>/sheets/<n>.png; POST /jobs/<id>/cancel; GET /health. Binds to loopback only."""
 import argparse, hashlib, json, os, re, shutil, subprocess, sys, tempfile, threading, time, uuid
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -20,6 +20,7 @@ class Job:
         s.events = []; s.cv = threading.Condition(); s.cancel = False; s.procs = set(); s.done = False
         s.ready = {}      # key -> glb path
         s.doc_files = []  # index -> extracted drawing PDF path (see GET /jobs/<id>/docs/<n>.pdf)
+        s.sheet_files = []  # index -> sheet preview PNG of a SolidWorks drawing (see GET /jobs/<id>/sheets/<n>.png and the 'drawings' event)
         s.t0 = time.time()
         s.convert_ready = threading.Event()  # set once the client has POSTed /select (or the wait times out)
         s.selected = None                    # None (not yet chosen) | 'all' | set of selected instance ids
@@ -118,6 +119,8 @@ class Server:
             for j in s.jobs.values():
                 if not j.done: s.stop(j)
         j = Job(s.root, 'replay'); src = s.a.replay
+        sd = os.path.join(src, 'sheets')
+        if os.path.isdir(sd): j.sheet_files = [os.path.join(sd, f) for f in sorted(os.listdir(sd), key=lambda f: int(os.path.splitext(f)[0]) if os.path.splitext(f)[0].isdigit() else 1 << 30) if f.lower().endswith('.png')]
         with s.lock: s.jobs[j.id] = j
         def go():
             try:
@@ -132,6 +135,30 @@ class Server:
                     j.emit(r['ev'], **d)
             finally: j.done = True
         threading.Thread(target=go, daemon=True).start(); return j
+    def extract_drawings(s, j, src):
+        """SolidWorks drawings (.SLDDRW) in the upload: a preview image per sheet plus the models each references.
+        Runs alongside the conversion and reports with one 'drawings' event when done: key (same normalization as
+        part_key, so the viewer matches it to a part or assembly by name), filename, sheets [{idx, name, w, h}]
+        (idx addresses GET /jobs/<id>/sheets/<idx>.png), refs (part_key of each referenced model)."""
+        try:
+            files = walk(src, '.slddrw')
+            if not files: return
+            from slddrw import read_drawing, png_size
+            sdir = os.path.join(j.dir, 'sheets'); os.makedirs(sdir, exist_ok=True)
+            out = []
+            for f in files:
+                if j.cancel: return
+                try: d = read_drawing(f)
+                except Exception: continue
+                sheets = []
+                for name, png in d['sheets']:
+                    idx = len(j.sheet_files); path = os.path.join(sdir, '%d.png' % idx)
+                    with open(path, 'wb') as fh: fh.write(png)
+                    j.sheet_files.append(path); w, h = png_size(png)
+                    sheets.append(dict(idx=idx, name=name, w=w, h=h))
+                if sheets: out.append(dict(key=part_key(os.path.basename(f)), filename=os.path.basename(f), sheets=sheets, refs=[part_key(r) for r in d['refs']]))
+            if out: j.emit('drawings', drawings=out)
+        except Exception: pass     # a drawing the reader cannot make sense of must never affect the import
     def stop(s, j):
         j.cancel = True
         j.convert_ready.set()   # wake run() immediately if it's paused waiting on a /select that will now never come
@@ -230,6 +257,7 @@ class Server:
             # filename never needs its own sanitizing; the key->filename mapping is for the viewer
             # to label and, on a collision, let the user pick among several candidates.
             pdfs = walk(src, '.pdf'); j.doc_files = pdfs
+            threading.Thread(target=s.extract_drawings, args=(j, src), daemon=True).start()
             docs = {}
             for i, p in enumerate(pdfs): docs.setdefault(part_key(os.path.basename(p)), []).append(dict(idx=i, filename=os.path.basename(p)))
             # Pause here for the viewer's "pick which assemblies/parts to load" modal (large
@@ -442,13 +470,19 @@ def make_handler(S):
             if m:
                 u = S._up(m.group(1))
                 return self._json(200, dict(offset=S.upload_offset(u['id']), size=u['size'])) if u else self._json(404, dict(error='unknown upload'))
-            m = re.match(r'^/jobs/(\w+)/(events|assembly\.glb|parts/([\w.-]+)\.glb|docs/(\d+)\.pdf)$', self.path)
+            m = re.match(r'^/jobs/(\w+)/(events|assembly\.glb|parts/([\w.-]+)\.glb|docs/(\d+)\.pdf|sheets/(\d+)\.png)$', self.path)
             j = S.jobs.get(m.group(1)) if m else None
             if not j: return self._json(404, dict(error='not found'))
             if m.group(4) is not None:    # a drawing PDF, addressed by index (see run()'s docs map) rather than by its own filename
                 idx = int(m.group(4)); path = j.doc_files[idx] if 0 <= idx < len(j.doc_files) else None
                 if not path or not os.path.exists(path): return self._json(404, dict(error='not found'))
                 sz = os.path.getsize(path); self.send_response(200); self._cors(); self.send_header('Content-Type', 'application/pdf'); self.send_header('Content-Length', str(sz)); self.end_headers()
+                with open(path, 'rb') as f: shutil.copyfileobj(f, self.wfile)
+                return
+            if m.group(5) is not None:    # a drawing sheet preview image, addressed by the idx the 'drawings' event gave
+                idx = int(m.group(5)); path = j.sheet_files[idx] if 0 <= idx < len(j.sheet_files) else None
+                if not path or not os.path.exists(path): return self._json(404, dict(error='not found'))
+                sz = os.path.getsize(path); self.send_response(200); self._cors(); self.send_header('Content-Type', 'image/png'); self.send_header('Content-Length', str(sz)); self.send_header('Cache-Control', 'private, max-age=3600'); self.end_headers()
                 with open(path, 'rb') as f: shutil.copyfileobj(f, self.wfile)
                 return
             if m.group(2) == 'events':
