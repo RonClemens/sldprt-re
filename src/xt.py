@@ -5,6 +5,14 @@ class R:
     def __init__(s,b,p=0): s.b=b; s.p=p
     def u8(s): v=s.b[s.p]; s.p+=1; return v
     def i16(s): v=struct.unpack_from('>h',s.b,s.p)[0]; s.p+=2; return v
+    def ptr(s):
+        """node index. 0..32767 = plain i16. A body with more than 32767 nodes writes index 32767+k (k>=1) as the negative
+        i16 -k followed by a u16 'block' (1 = 32768..65535; further blocks assumed to continue: +32768 each)."""
+        v=s.i16()
+        if v<0:
+            blk=struct.unpack_from('>H',s.b,s.p)[0]; s.p+=2
+            return 32767-v+32768*(blk-1)
+        return v
     def i32(s): v=struct.unpack_from('>i',s.b,s.p)[0]; s.p+=4; return v
     def f64(s): v=struct.unpack_from('>d',s.b,s.p)[0]; s.p+=8; return v
     def s8(s): n=s.u8(); v=s.b[s.p:s.p+n].decode('latin1'); s.p+=n; return v
@@ -16,7 +24,7 @@ def read_val(r,code):
     if code=='n': return r.i16()
     if code=='w': return r.i16()  # utf16 unit
     if code=='d': return r.i32()
-    if code=='p': return r.i16()
+    if code=='p': return r.ptr()
     if code=='f': return r.f64()
     if code=='i': return (r.f64(),r.f64())
     if code in 'vh': return (r.f64(),r.f64(),r.f64())
@@ -64,7 +72,7 @@ def parse(buf, base, partial=False):
                     layouts[nt]=(name,var,fl)
             name,var,fl=layouts[nt]
             count=r.i32() if var else None
-            nid=r.i16()
+            nid=r.ptr()
             node=dict(type=nt,name=name,id=nid)
             for k,f in enumerate(fl):
                 n=f['n']

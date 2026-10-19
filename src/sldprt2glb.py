@@ -10,17 +10,34 @@ from brep import Brep
 import tess
 from export import build_mesh, write_obj, write_glb
 MAGIC=bytes.fromhex('231dd571da8148a2a85898b21b89ef99')
+def inflate_section(buf):
+    """buf = section starting at its 16-byte magic: [magic][u32 usize][u32 csize][u32 ?][zlib]. A transmit larger than 1 MiB
+    continues after the first deflate block as [u32 usz][u32 csz][zlib] records (usz<=4096) ended by usz=csz=0 or by
+    something that is not a valid record (next section / MFC framing). Returns the concatenated bytes."""
+    d=zlib.decompressobj(); out=d.decompress(buf[24:])
+    rest=d.unused_data
+    if len(out)==1<<20:      # continuation records only follow a full 1 MiB block
+        q=0; parts=[out]
+        while q+8<=len(rest):
+            usz,csz=struct.unpack_from('<II',rest,q)
+            if not usz or not csz or q+8+csz>len(rest): break
+            try: o=zlib.decompress(rest[q+8:q+8+csz])
+            except Exception: break
+            if len(o)!=usz: break
+            parts.append(o); q+=8+csz
+        out=b''.join(parts)
+    return out
 def geometry_transmits(streams):
     """yield (stream_name, section_idx, transmit bytes) for geometry streams.
     *-Partition: [u32 len][section]... back to back. */LocalBodies (imported / multi-body parts): MFC-framed, so the same
     sections are found by scanning for the section magic instead."""
     for name,data in streams.items():
         if name.endswith('/LocalBodies'):
-            for k,m in enumerate(re.finditer(re.escape(MAGIC),data)):
-                p=m.start()
+            ms=[m.start() for m in re.finditer(re.escape(MAGIC),data)]
+            for k,p in enumerate(ms):
                 if p+24>len(data): continue
-                cs=struct.unpack_from('<I',data,p+20)[0]
-                try: yield name,k,zlib.decompress(data[p+24:p+24+cs])
+                nxt=ms[k+1] if k+1<len(ms) else len(data)
+                try: yield name,k,inflate_section(data[p:nxt])
                 except Exception: continue
             continue
         if not name.endswith('-Partition'): continue
@@ -28,7 +45,7 @@ def geometry_transmits(streams):
         while pos+4<=len(data):
             ln=struct.unpack_from('<I',data,pos)[0]; sec=data[pos+4:pos+4+ln]
             if sec[:16]!=MAGIC: break
-            try: raw=zlib.decompress(sec[24:])
+            try: raw=inflate_section(sec)
             except Exception: break
             yield name,k,raw; pos+=4+ln;k+=1
 def fallback_transmits(streams):
@@ -45,7 +62,7 @@ def fallback_transmits(streams):
             if raw[:2]==b'PS': yield name,k,raw
 def is_ole2(path):
     with open(path,'rb') as f: return f.read(4)==b'\xd0\xcf\x11\xe0'
-CACHE_VERSION='4'    # bump when tessellation output changes (new surface types, boundary fixes) so stale cached meshes are not reused
+CACHE_VERSION='5'    # bump when tessellation output changes (new surface types, boundary fixes) so stale cached meshes are not reused
 def _cache_file(path,bbox):
     d=os.environ.get('SLDPRT_CACHE')
     if not d: return None
