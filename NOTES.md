@@ -87,3 +87,21 @@ coplanar, 0.00000 mm); its 4 wheel joints match the URDF (axis lines y/z offsets
 Coincident2 is a reference-plane entity (no id-rep), not decoded. Joint axes: prox at x=2.491 mm, dist at y=189.21 mm,
 matching URDF prox_joint xyz 0.00249 and dist_joint offset 0.18921; effector axis perpendicular to and intersecting the
 dist axis, consistent with the URDF.
+
+## Large bodies (> 32767 nodes, > 1 MiB transmit) -- fixed 2026-10
+Symptom: ~all faces of some parts failed with KeyError(<node id>); the XT parse stopped early at a bogus node type 1.
+Two independent causes:
+1. **Container: transmits over 1 MiB are split.** The section is `[magic][u32 usize=1048576][u32 csize][zlib block]`; the rest
+   follows the first deflate block as records `[u32 usz][u32 csz][zlib stream]` (usz <= 4096) terminated by `usz=csz=0`
+   (then MFC framing / the next section magic). Concatenating all blocks gives the full transmit (Hub 2.08 MB, MAIN DISCONNECT 1.84 MB,
+   door plate 7.4 MB). Seen in `*/LocalBodies`; `*-Partition` sections are handled the same way (`sldprt2glb.inflate_section`).
+2. **XT: node indices above 32767.** Indices (node id, and every pointer field) are an i16 for 0..32767. Index 32767+k (k>=1) is
+   written as the negative i16 `-k` followed by one extra u16 (always 1 in the data seen; read as a block number, +32768 per
+   block, unverified beyond 65535). `xt.R.ptr()`. Examples: 32768 = `ff ff 00 01`, 32769 = `ff fe 00 01`. The old parser read
+   `ff ff` as -1 and left `00 01` in the stream, which was then taken as the end marker (node type 1) -- hence "truncated at 1 MiB"
+   was a misdiagnosis for these files: with the 2 MB body the stream also ends cleanly with type 1 at the very last byte.
+   Other i16 fields (`n`, `w`) stay plain.
+Results (Hydro sample, TOL default): Hub Assy 1787 faces -> 20 fail (halfedge with null edge, KeyError(1)), 86k tris;
+MAIN DISCONNECT 1148 faces -> 25 fail (hole bridge), 5.7k tris, 76x178x170 mm; door plate 800 faces -> 96 fail, 3.09M tris (274 s).
+27244609 (previously 14 failed, truncated) now 0 failed. Other parts unchanged; ROS regress OK. CACHE_VERSION 5.
+Check without proprietary files: `python3 -I tests/test_xt_extended.py` (synthetic extended-index stream + continuation records).
