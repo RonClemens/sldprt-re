@@ -65,3 +65,6 @@ thread B-spline faces are meshed from their boundary only; tessellation density 
 
 This repo holds code and public test references only. CAD files and converted models are git-ignored on purpose;
 program or facility data must never be committed here.
+
+## BOM structure
+`src/structure.py` makes one reconciled, indented BOM (CAD tree + file properties + drawings + a TDP index) and lists every disagreement: see `docs/bom-structure.md`.
