@@ -60,7 +60,14 @@ so `new THREE.Matrix4().fromArray(m)` applies directly.
 
 - `plan` - sent within ~seconds, **before any geometry**. Built from the assembly's component tree (plain XML with a bounding
   box per component):
-  `{name, instances:[{id, path, part, name, nha, level, matrix, bbox:[min3,max3], hidden, suppressed, assembly?, key?, file?}], parts:[{key, file, bytes}], missing:[file], docs:{partKey:[{idx, filename}]}, sldasm_files_found, top_level_assemblies:[file], assembly_refs, part_refs}`.
+  `{name, instances:[{id, path, part, name, nha, level, matrix, bbox:[min3,max3], hidden, suppressed, config?, assembly?, key?, file?}], parts:[{key, file, bytes}], missing:[file], docs:{partKey:[{idx, filename}]}, sldasm_files_found, top_level_assemblies:[file], assembly_refs, part_refs}`.
+- `properties` (sent in batches of up to 200 files, a little after `plan`, alongside the conversion; omitted for a file with no properties streams, e.g. the older OLE2 format):
+  `{files:{key:{partNumber?, partNumberSource?, description?, revision?, custom:{name:value}, sw:{configuration, bomPartNumber, title, subject, comments, author}, configs:{configurationName:{partNumber?, description?, revision?, custom:{...}}}}}}`.
+  `key` is the part's or sub-assembly's file name run through the same normalization as a part key, so match it exactly as `docs` is. Read by `src/props.py` from the file's own
+  `docProps` streams: `partNumber` is a custom property you set (`partNumberSource: "custom:<property name>"`, matched by the names Part Number, PartNo, PN, Document Number ...)
+  or, when none is set, SolidWorks' computed `SW-BOM Part Number` (`partNumberSource: "bom"`; it equals the file name unless the document's BOM option says otherwise).
+  `configs` holds the same fields per configuration (a PDM setup usually sets the part number there): a component instance's `config` (see `plan`) names the one it uses.
+  This service only reads the properties; what a part number means for a model is the viewer's decision.
 - `drawings` (sent once, a little after `plan`, only when the upload held `.SLDDRW` files; read alongside the conversion):
   `{drawings:[{key, filename, sheets:[{idx, name, w, h}], refs:[partKey]}]}`. `key` is the drawing's file name run through the same
   normalization as a part key, so match it to a part or assembly by name exactly as `docs` is; `refs` are the part keys of the models the
