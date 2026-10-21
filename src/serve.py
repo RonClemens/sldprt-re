@@ -159,6 +159,21 @@ class Server:
                 if sheets: out.append(dict(key=part_key(os.path.basename(f)), filename=os.path.basename(f), sheets=sheets, refs=[part_key(r) for r in d['refs']]))
             if out: j.emit('drawings', drawings=out)
         except Exception: pass     # a drawing the reader cannot make sense of must never affect the import
+    def extract_properties(s, j, files):
+        """Runs alongside the conversion and reports the file properties (see props.py) in 'properties' events, 200 files at a time:
+        {files: {key: record}} with the same key normalization as part_key, so the viewer matches a record to a part or sub-assembly by key
+        exactly as it does 'docs'. A file with no properties streams (older OLE2 format) simply has no entry."""
+        try:
+            from props import read_properties
+            batch = {}
+            for f in files:
+                if j.cancel: return
+                try: rec = read_properties(f)
+                except Exception: continue
+                if rec: batch[part_key(os.path.basename(f))] = rec
+                if len(batch) >= 200: j.emit('properties', files=batch); batch = {}
+            if batch: j.emit('properties', files=batch)
+        except Exception: pass     # a file the reader cannot make sense of must never affect the import
     def stop(s, j):
         j.cancel = True
         j.convert_ready.set()   # wake run() immediately if it's paused waiting on a /select that will now never come
@@ -218,7 +233,7 @@ class Server:
                 name = it['path'].rsplit('/', 1)[-1]
                 if is_asm:
                     inst.append(dict(id=len(inst), path=full_path, part=None, assembly=True, key=key, name=name,
-                                     nha=nha, level=level, hidden=bool(it['hidden']), suppressed=bool(it['suppressed'])))
+                                     nha=nha, level=level, hidden=bool(it['hidden']), suppressed=bool(it['suppressed']), config=it.get('cfg')))
                     continue
                 path = idx.get(fn.lower())
                 bb_ = bbox.get(fn)
@@ -229,7 +244,7 @@ class Server:
                     c = np.array([[x, y, z, 1.0] for x in (bb[0], bb[3]) for y in (bb[1], bb[4]) for z in (bb[2], bb[5])]) @ M
                     world = [c[:, :3].min(0).tolist(), c[:, :3].max(0).tolist()]
                 inst.append(dict(id=len(inst), path=full_path, part=key, name=name, nha=nha, level=level, matrix=M.reshape(-1).tolist(), bbox=world,
-                                 hidden=bool(it['hidden']), suppressed=bool(it['suppressed'])))
+                                 hidden=bool(it['hidden']), suppressed=bool(it['suppressed']), config=it.get('cfg')))
         return inst, parts, sorted(missing)
     def run(s, j, filename):
         try:
@@ -258,6 +273,7 @@ class Server:
             # to label and, on a collision, let the user pick among several candidates.
             pdfs = walk(src, '.pdf'); j.doc_files = pdfs
             threading.Thread(target=s.extract_drawings, args=(j, src), daemon=True).start()
+            threading.Thread(target=s.extract_properties, args=(j, files), daemon=True).start()
             docs = {}
             for i, p in enumerate(pdfs): docs.setdefault(part_key(os.path.basename(p)), []).append(dict(idx=i, filename=os.path.basename(p)))
             # Pause here for the viewer's "pick which assemblies/parts to load" modal (large
