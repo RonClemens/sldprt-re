@@ -4,7 +4,7 @@
 # The helper refuses a non-loopback bind without a token, so SLD_TOKEN is mandatory here.
 FROM python:3.12-slim
 
-RUN groupadd -r app && useradd -r -g app -m app && mkdir /work && chown app:app /work
+RUN groupadd -r -g 10001 app && useradd -r -u 10001 -g app -m app && mkdir /work && chown app:app /work
 WORKDIR /app
 COPY requirements.txt ./
 # PIP_ARGS: extra pip flags, e.g. "--index-url https://<internal mirror>/simple" or a --cert bundle for a TLS-inspecting proxy.
