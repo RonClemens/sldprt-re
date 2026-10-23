@@ -7,7 +7,9 @@ FROM python:3.12-slim
 RUN groupadd -r app && useradd -r -g app -m app && mkdir /work && chown app:app /work
 WORKDIR /app
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+# PIP_ARGS: extra pip flags, e.g. "--index-url https://<internal mirror>/simple" or a --cert bundle for a TLS-inspecting proxy.
+ARG PIP_ARGS=""
+RUN pip install --no-cache-dir $PIP_ARGS -r requirements.txt
 
 COPY src/*.py src/sch_13006_s_t.txt ./
 USER app
