@@ -1,0 +1,15 @@
+.git
+.cache
+out
+CAD
+tests
+tools
+docs
+viewer
+**/__pycache__
+*.SLDPRT
+*.sldprt
+*.SLDASM
+*.sldasm
+*.SLDDRW
+*.zip

@@ -479,7 +479,7 @@ def check_workers():
         raise SystemExit('A conversion worker cannot import numpy/scipy with %s:\n%s\nInstall them for that interpreter: %s -m pip install numpy scipy' % (sys.executable, r.stderr.strip()[-300:], sys.executable))
 def main():
     check_workers()
-    ap = argparse.ArgumentParser(); ap.add_argument('--port', type=int, default=8765); ap.add_argument('--origin', action='append', default=['https://ronclemens.github.io'])
+    ap = argparse.ArgumentParser(); ap.add_argument('--host', default=os.environ.get('SLD_HOST', '127.0.0.1'), help='address to bind. Default loopback only; a container sets 0.0.0.0 (then --token is required)'); ap.add_argument('--port', type=int, default=8765); ap.add_argument('--origin', action='append', default=['https://ronclemens.github.io'])
     ap.add_argument('--jobs', type=int, default=max(1, (os.cpu_count() or 2) - 1)); ap.add_argument('--timeout', type=int, default=600, help='per-part seconds; a part that times out is retried once with --retry-factor times this and half the parallelism')
     ap.add_argument('--retry-factor', type=float, default=2.0); ap.add_argument('--work', help='work dir (cache, jobs). Default: ~/.sldprt-re/work, so the conversion cache survives restarts')
     ap.add_argument('--select-timeout', type=float, default=1800, help='seconds to wait after \'plan\' for the viewer\'s POST /jobs/<id>/select before converting everything anyway (the viewer answers immediately for a small import, or once its selection modal is confirmed for a large one; default 30 minutes -- a real multi-thousand-row import can take a person a while to pick through, and this only costs an idle wait, not CPU, so it is deliberately generous)')
@@ -490,9 +490,10 @@ def main():
     ap.add_argument('--viewer', default='https://ronclemens.github.io/ipb_viz/')
     a = ap.parse_args(); a.origins = set(a.origin)
     if a.token == 'auto': import secrets; a.token = secrets.token_urlsafe(18)
+    if a.host not in ('127.0.0.1', 'localhost', '::1') and not a.token: raise SystemExit('--host %s exposes the helper beyond this machine: set --token (or SLD_TOKEN).' % a.host)
     S = Server(a)
-    srv = ThreadingHTTPServer(('127.0.0.1', a.port), make_handler(S)); srv.daemon_threads = True
-    print(f'sldprt-re helper {VERSION} on http://127.0.0.1:{a.port}  (work dir {S.root}, allowed origins {sorted(a.origins)})', flush=True)
+    srv = ThreadingHTTPServer((a.host, a.port), make_handler(S)); srv.daemon_threads = True
+    print(f'sldprt-re helper {VERSION} on http://{a.host}:{a.port}  (work dir {S.root}, allowed origins {sorted(a.origins)})', flush=True)
     if a.public_url:
         if not a.token: print('warning: --public-url without --token: anyone with the URL can use this helper. Use --token auto.', flush=True)
         from urllib.parse import quote
