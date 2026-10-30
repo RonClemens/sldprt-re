@@ -13,6 +13,8 @@ def main():
         if len(sys.argv) > 3 and sys.argv[3] != '-':
             from export import write_glb
             write_glb(sys.argv[3], P, N, I, c, os.path.splitext(os.path.basename(path))[0])
-    except Exception as e: r = dict(ok=False, error=repr(e)[:200])
+    except Exception as e:
+        r = dict(ok=False, error=repr(e)[:200])
+        if getattr(e, 'cls', None): r['class'] = e.cls     # NoBody: reader_gap / faceless / empty
     r['sec'] = round(time.time() - t0, 1); print(json.dumps(r))
 if __name__ == '__main__': main()

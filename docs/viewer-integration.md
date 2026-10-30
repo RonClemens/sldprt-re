@@ -96,7 +96,7 @@ so `new THREE.Matrix4().fromArray(m)` applies directly.
   `part_started`. `instances_total` counts every leaf (non-assembly) instance from `plan`; `instances_selected` is how many
   will actually be converted.
 - `part_started {key}` / `part_done {key, url, tris, failed_faces, sec}` / `part_failed {key, reason}`
-  (reasons are short codes: `timeout`, `unsupported_surface:<type>`, `ole2`, `no_body`, `missing_file`, `error:<text>`).
+  (reasons are short codes: `timeout`, `unsupported_surface:<type>`, `ole2`, `no_body`, `missing_file`, `error:<text>`). A part with no decodable body fails with `error:NoBody(... [class=<cls>: detail])` and the event also carries `class`: `reader_gap` (a body is present but could not be decoded: a body type/version the reader lacks), `faceless` (bodies decode, none has faces: wire/sheet/reference geometry) or `empty` (no Parasolid geometry in the file).
 - `progress {parts_done, parts_total, instances_ready, instances_total, elapsed_s}`. `instances_total` here is
   `instances_selected` from `convert_started`, not every instance in `plan` -- a deselected part is never "pending", it
   simply never existed for the rest of the job.
@@ -110,7 +110,7 @@ so `new THREE.Matrix4().fromArray(m)` applies directly.
   Hangs inside native numpy code cannot be interrupted by an in-process alarm; this was observed on the facility data.
 - Results are cached on disk by file hash (+ bounding box), so re-importing is instant and a cancelled job loses nothing.
 - Order: smallest parts first (fast visible progress); heavy outliers last.
-- A part referenced by an assembly but absent from the upload is reported as `missing_file` and stays a box.
+- A part referenced by an assembly but absent from the upload is reported as `missing_file` and stays a box. A `Copy_of_X` / `Copy of X` reference is first retried as `X` before being declared missing.
 - One job at a time per helper by default; a second import cancels the first.
 - **Selection gate:** after emitting `plan`, the job always pauses (up to `--select-timeout`, default 1800s/30min *of no
   activity*, see below) for a `POST /jobs/{job}/select`. This lets the page show a "pick which assemblies/parts to load"
