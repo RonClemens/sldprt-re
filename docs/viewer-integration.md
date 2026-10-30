@@ -92,6 +92,7 @@ so `new THREE.Matrix4().fromArray(m)` applies directly.
   `.sldprt`. `assembly_refs: 0` against a real, present `.sldasm` means the component tree itself has no sub-assembly
   nesting in it -- every part really is a direct child of the top assembly in SolidWorks' own data, not a parsing bug.
   **The job then pauses** (see "Server behaviour" below) until the page answers with `POST /jobs/{job}/select`.
+- `plan` also carries `duplicates_hidden: [{part, kept, hidden}]`: leaf instances of one part at the identical world pose (per-configuration copies, duplicate `<n>` components) are collapsed to the first, within one top-level assembly; the same part at different poses is never collapsed.
 - `convert_started {instances_selected, instances_total}` - sent once the pause above is resolved, before the first
   `part_started`. `instances_total` counts every leaf (non-assembly) instance from `plan`; `instances_selected` is how many
   will actually be converted.
