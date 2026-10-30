@@ -205,11 +205,11 @@ class Server:
         from batch import top_level
         idx = {}
         for f in files: idx.setdefault(os.path.basename(f).lower(), f)
-        inst = []; parts = {}; missing = set(); j.used_asms = []; j.skipped = []
+        inst = []; parts = {}; missing = set(); j.used_asms = []; j.skipped = []; j.dup_hidden = []
         for asm in sorted(top_level(asms), key=os.path.getsize, reverse=True):
             st = read_streams(asm)
             if 'swXmlContents/COMPINSTANCETREE' not in st: j.skipped.append(dict(file=os.path.basename(asm), reason='ole2' if open(asm, 'rb').read(4) == b'\xd0\xcf\x11\xe0' else 'no_component_tree')); continue
-            j.used_asms.append(asm)
+            j.used_asms.append(asm); seen_pose = {}    # poses are compared within one top-level assembly only
             _, models, _ = parse_tree(st['swXmlContents/COMPINSTANCETREE'])
             me = os.path.basename(asm).lower()
             root = [m for m in models.values() if m['file'] and m['file'].lower() == me and m['refs']]
@@ -240,6 +240,10 @@ class Server:
                 if path is None: missing.add(fn); parts.setdefault(key, dict(key=key, file=fn, path=None, bytes=0))
                 else: parts.setdefault(key, dict(key=key, file=fn, path=path, bytes=os.path.getsize(path), bbox=np.array(bb_).reshape(2, 3).tolist() if bb_ and len(bb_) == 6 else None))
                 M = np.asarray(it['M']); bb = bbox.get(fn); world = None
+                # one component placed twice at the very same pose (a per-configuration copy, a duplicate <n>) is one physical part: keep the first
+                pose = (key, bool(it['suppressed']), bool(it['hidden']), tuple(np.round(M.reshape(-1), 6)))
+                if pose in seen_pose: j.dup_hidden.append(dict(part=key, kept=seen_pose[pose], hidden=full_path)); continue
+                seen_pose[pose] = full_path
                 if bb and len(bb) == 6:
                     c = np.array([[x, y, z, 1.0] for x in (bb[0], bb[3]) for y in (bb[1], bb[4]) for z in (bb[2], bb[5])]) @ M
                     world = [c[:, :3].min(0).tolist(), c[:, :3].max(0).tolist()]
@@ -292,7 +296,7 @@ class Server:
             # assembly_refs comes back 0 against a real, present .sldasm, the component tree
             # itself has no sub-assembly nesting to find -- not a parsing bug.
             assembly_refs = sum(1 for i in inst if i.get('assembly'))
-            j.emit('plan', name=os.path.splitext(filename)[0], instances=inst, parts=[{k: v for k, v in p.items() if k not in ('path', 'bbox')} for p in parts.values()], missing=missing, skipped=getattr(j, 'skipped', []), virtual=dict(written=len(vrep['written']), unmatched=vrep['unmatched'], ambiguous=[a['name'] for a in vrep['ambiguous']]), docs=docs,
+            j.emit('plan', name=os.path.splitext(filename)[0], instances=inst, parts=[{k: v for k, v in p.items() if k not in ('path', 'bbox')} for p in parts.values()], missing=missing, skipped=getattr(j, 'skipped', []), duplicates_hidden=j.dup_hidden, virtual=dict(written=len(vrep['written']), unmatched=vrep['unmatched'], ambiguous=[a['name'] for a in vrep['ambiguous']]), docs=docs,
                    sldasm_files_found=len(asms), top_level_assemblies=[os.path.basename(a) for a in getattr(j, 'used_asms', [])], assembly_refs=assembly_refs, part_refs=len(inst) - assembly_refs)
             # A single flat wait can't tell "genuinely abandoned" from "a person still has the
             # 'choose what to load' modal open but got pulled away for a while" -- no fixed
