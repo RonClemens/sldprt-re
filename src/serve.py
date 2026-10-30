@@ -235,7 +235,7 @@ class Server:
                     inst.append(dict(id=len(inst), path=full_path, part=None, assembly=True, key=key, name=name,
                                      nha=nha, level=level, hidden=bool(it['hidden']), suppressed=bool(it['suppressed']), config=it.get('cfg')))
                     continue
-                path = idx.get(fn.lower())
+                path = idx.get(fn.lower()) or idx.get(re.sub(r'^copy[_ ]of[_ ]', '', fn, flags=re.I).lower())    # 'Copy_of_X.SLDPRT' absent from the zip: the original X is the same part
                 bb_ = bbox.get(fn)
                 if path is None: missing.add(fn); parts.setdefault(key, dict(key=key, file=fn, path=None, bytes=0))
                 else: parts.setdefault(key, dict(key=key, file=fn, path=path, bytes=os.path.getsize(path), bbox=np.array(bb_).reshape(2, 3).tolist() if bb_ and len(bb_) == 6 else None))
@@ -355,7 +355,7 @@ class Server:
                     if res.get('ok'): counts['ok'] += 1; j.ready[p['key']] = out
                     else: counts['bad'] += 1
                 if res.get('ok'): j.emit('part_done', key=p['key'], url=f'/jobs/{j.id}/parts/{p["key"]}.glb', tris=res['tris'], failed_faces=res['failed_faces'], sec=res['sec'])
-                else: j.emit('part_failed', key=p['key'], reason=res.get('error', 'error'))
+                else: j.emit('part_failed', key=p['key'], reason=res.get('error', 'error'), **({'class': res['class']} if res.get('class') else {}))
                 ready = [i for i in inst if i['part'] in j.ready]
                 j.emit('progress', parts_done=counts['ok'] + counts['bad'], parts_total=counts['total'], instances_ready=len(ready), instances_total=len(inst), elapsed_s=round(time.time() - j.t0, 1))
             with ThreadPoolExecutor(max(1, s.a.jobs)) as ex: list(ex.map(work, todo))

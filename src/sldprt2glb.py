@@ -83,23 +83,30 @@ def load_part(path,schema,log=lambda *a:None,bbox=None):
         np.savez(tmp,P=P,N=N,I=I,color=np.array(color),fails=np.array([[str(a) for a in f] for f in fails],dtype=str).reshape(-1,2))
         os.replace(tmp,cf)
     return r
+class NoBody(ValueError):
+    """No Parasolid body with faces. `cls` says why: 'reader_gap' (a body was present but could not be decoded: a body type or
+    version the reader lacks), 'faceless' (bodies decoded, none has a face: wire/sheet/reference geometry) or 'empty' (the file
+    carries no Parasolid geometry stream at all)."""
+    def __init__(self,cls,detail):
+        self.cls=cls; self.detail=detail
+        super().__init__('no decodable Parasolid body with faces found [class=%s: %s]'%(cls,detail))
 def _load_part(path,schema,log,bbox):
     if is_ole2(path): raise ValueError('pre-2015 OLE2 SolidWorks file (unsupported)')
-    st=read_streams(path); best=None
-    for name,k,raw in geometry_transmits(st):
-        if b'TRANSMIT FILE (deltas)' in raw[:80]: continue
-        try: br=Brep(raw,schema)
-        except Exception as e: log('skip',name,k,repr(e)); continue
-        nf=sum(1 for n in br.N.values() if n['name']=='FACE')
-        if nf and (best is None or nf>best[0]): best=(nf,br)
-    if best is None:
-        for name,k,raw in fallback_transmits(st):
+    st=read_streams(path); best=None; seen=0; faceless=0; errs=[]
+    for srcs in (geometry_transmits,fallback_transmits):
+        if srcs is fallback_transmits and best is not None: break
+        for name,k,raw in srcs(st):
             if b'TRANSMIT FILE (deltas)' in raw[:80]: continue
+            seen+=1
             try: br=Brep(raw,schema)
-            except Exception as e: log('skip',name,k,repr(e)); continue
+            except Exception as e: log('skip',name,k,repr(e)); errs.append(repr(e)[:80]); continue
             nf=sum(1 for n in br.N.values() if n['name']=='FACE')
-            if nf and (best is None or nf>best[0]): best=(nf,br)
-    if best is None: raise ValueError('no decodable Parasolid body with faces found')
+            if not nf: faceless+=1
+            elif best is None or nf>best[0]: best=(nf,br)
+    if best is None:
+        if errs: raise NoBody('reader_gap','%d of %d transmits failed to decode, e.g. %s'%(len(errs),seen,errs[0]))
+        if seen: raise NoBody('faceless','%d transmits decoded, none with faces'%faceless)
+        raise NoBody('empty','no Parasolid geometry in the file')
     best[1].bbox=bbox
     r=build_mesh(best[1],tess.tess_face,log=log)
     if getattr(best[1],'truncated',False): r[4].append(('truncated','body cut off at 1 MiB in the file; geometry incomplete'))    # surfaced through the failed-face count
