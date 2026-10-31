@@ -184,3 +184,10 @@ so `new THREE.Matrix4().fromArray(m)` applies directly.
 
 - **Desktop first.** Browser and helper on the same machine (`127.0.0.1`), so no tunnel is needed. An optional `--token` (header or `?token=`) is supported. The Android phone is a later viewer-only client (load the exported GLB, or use a tunnel to the desktop helper).
 - **Delivery to ipb_viz:** landed via [ipb_viz#1](https://github.com/RonClemens/ipb_viz/pull/1), merged.
+
+## Requested of the converter (open)
+
+Questions from ipb_viz that need the converter side or real data. Masked: no part numbers (use `P1`, `A1`, ...). Tracked in ipb_viz, label `needs-host-answer`.
+
+- **ipb_viz #90, reference designators:** do the SolidWorks files carry reference designators (component names, file properties) that could ride on each `plan` instance as `refDes`? Answer here or on the issue.
+- **ipb_viz #91, over-counted part:** for one part whose instance count exceeds its BOM quantity, attach from the `plan` event: each instance's `path` (masked), `config`, `<n>`, `suppressed`, `hidden`, the translation of `matrix` in mm, and `duplicates_hidden`.
