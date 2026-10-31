@@ -9,6 +9,9 @@ class R:
     def f64(s): v=struct.unpack_from('>d',s.b,s.p)[0]; s.p+=8; return v
     def s8(s): n=s.u8(); v=s.b[s.p:s.p+n].decode('latin1'); s.p+=n; return v
     def s32(s): n=s.i32(); v=s.b[s.p:s.p+n].decode('latin1'); s.p+=n; return v
+def idx(r):
+    v=r.i16()
+    return v if v>=0 else 32767*r.i16()-v    # indices beyond 32766 are written as a negative short -k followed by a block number w: node 32767*w+k
 def read_val(r,code):
     if code=='u': return r.u8()
     if code=='c': return chr(r.u8())
@@ -16,7 +19,7 @@ def read_val(r,code):
     if code=='n': return r.i16()
     if code=='w': return r.i16()  # utf16 unit
     if code=='d': return r.i32()
-    if code=='p': return r.i16()
+    if code=='p': return idx(r)
     if code=='f': return r.f64()
     if code=='i': return (r.f64(),r.f64())
     if code in 'vh': return (r.f64(),r.f64(),r.f64())
@@ -64,7 +67,7 @@ def parse(buf, base, partial=False):
                     layouts[nt]=(name,var,fl)
             name,var,fl=layouts[nt]
             count=r.i32() if var else None
-            nid=r.i16()
+            nid=idx(r)
             node=dict(type=nt,name=name,id=nid)
             for k,f in enumerate(fl):
                 n=f['n']
