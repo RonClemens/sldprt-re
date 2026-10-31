@@ -191,3 +191,16 @@ Questions from ipb_viz that need the converter side or real data. Masked: no par
 
 - **ipb_viz #90, reference designators:** do the SolidWorks files carry reference designators (component names, file properties) that could ride on each `plan` instance as `refDes`? Answer here or on the issue.
 - **ipb_viz #91, over-counted part:** for one part whose instance count exceeds its BOM quantity, attach from the `plan` event: each instance's `path` (masked), `config`, `<n>`, `suppressed`, `hidden`, the translation of `matrix` in mm, and `duplicates_hidden`.
+
+## Instance counts: what `plan` does and how to diagnose a mismatch
+
+`plan` lists every placement in the component tree, **except** that within one top-level assembly an instance of the same part at the identical
+pose (translation to 1 µm after rounding to 6 decimals in metres, same rotation, same hidden/suppressed flags) is kept once; the others are
+reported in `duplicates_hidden: [{part, kept, hidden}]` (paths, not counts). Nothing else is merged. The collapse was added for ipb_viz #85
+and has not yet been checked against that import.
+
+To see why a part renders more often than its BOM quantity, run `python3 tools/plan_dups.py <assembly>.SLDASM --top 5`. It reads the instance
+list **before** the collapse and prints, per part (masked as P1.. / A1..): instances, distinct poses, parents, configurations, same-pose
+extras, hidden/suppressed counts and the first 12 instances. Reading: same-pose extras = instances - 1 -> duplicates the collapse removes;
+distinct poses = instances -> placed several times (BOM quantity is per assembly); several configurations -> per-configuration copies.
+Pose is rounded to 1 mm here. Tested by `tests/test_plan_dups.py`.
