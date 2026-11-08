@@ -104,7 +104,7 @@ Generic steps; the organisation's incident procedure takes precedence and starts
 
 ## 10. Decisions the owner still has to take
 
-1. **The Hydro material** (`sources/Hydro_Docs/*`, `tools/examples/hydro/*`, about 75 MB, served publicly by Pages): attest `owner-attested-public` with a clearance record, replace it with a synthetic equivalent, or remove it **and** purge history. `node tools/boundary-check.mjs --list-unreviewed` lists it first. The scanner found no controlled-information banner, distribution statement or export caveat in the text it could read, found a proprietary-company legend in the drawing package, and could not examine 724 images in the package.
+1. **The Hydro material** (`sources/Hydro_Docs/*`, `tools/examples/hydro/*`, 15 files, about 75 MB): **decided 2026-11-08.** The owner stated that it is not CUI and is to be treated as publicly accessible by all repositories; it is recorded in the manifest as `owner-attested-public` with that statement as the evidence. Still open: name where a clearance record is kept (the statement is the only record cited so far). The scanner found no controlled-information banner, distribution statement or export caveat in the text it could read, found a proprietary-company legend in the drawing package (a third-party legend, not a controlled marking: it stays a visible warning) and could not examine 724 images in the package. The native SolidWorks assembly these files were made from (`Hydro_CAD.zip`) is **not** in any repository; see `docs/data-boundary-cui-side.md`, section "Mirroring and testing".
 2. `docs/IADSProgrammingGuide.pdf` (a vendor document with a proprietary legend): confirm redistribution is permitted or remove it.
 3. The other grandfathered examples (bike, bricks, enclosure, demo, sample files, `sample-arm-with-drawings.zip`): attest or leave them as warnings; `--accept` records it.
 4. Set C13 on all three repositories and add the `BOUNDARY_DENYLIST` secret (a private list of terms, one per line).
@@ -115,7 +115,7 @@ Generic steps; the organisation's incident procedure takes precedence and starts
 
 ## 11. The CUI side's half
 
-`docs/data-boundary-cui-side.md` and `tools/cui-side-kit/` give the CUI-side repositories what they need to keep their half: a pre-push hook that refuses any remote not on their allow-list, a pinned verbatim vendoring check, a masked report template, and the checklist for a release. This repository cannot see or enforce
+`docs/data-boundary-cui-side.md` and `tools/cui-side-kit/` give the CUI-side repositories what they need to keep their half, and to mirror and test with the public sample set (`--verify-samples`): a pre-push hook that refuses any remote not on their allow-list, a pinned verbatim vendoring check, a masked report template, and the checklist for a release. This repository cannot see or enforce
 anything on that side; the contract is only complete when those repositories adopt it.
 
 ## Appendix: file formats

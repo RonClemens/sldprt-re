@@ -15,6 +15,7 @@
 //        node tools/boundary-check.mjs --init-manifest              add every unlisted data file as `unreviewed` (grandfathering), record hashes
 //        node tools/boundary-check.mjs --accept PATH... --class synthetic|open-licence|third-party|owner-attested-public --evidence "text"   a person reviewed these files
 //        node tools/boundary-check.mjs --accept PATH... --class ... --evidence "text" --generated tools/make-x.py   a tracked script reproduces them from tracked inputs (checked: the script must exist)
+//        node tools/boundary-check.mjs --verify-samples DIR          on a mirror of a public repository (no git needed): every file its manifest lists is there with the recorded hash; extra data files are noted
 //        node tools/boundary-check.mjs --list-unreviewed             the grandfathered files by size, with the suggested class and note (what the owner still has to decide)
 //        node tools/boundary-check.mjs --rehash                     re-record hashes of listed files that changed on purpose (generated examples): review the diff first
 // Accepted findings: data-boundary/accepted-findings.json, [{ rule, file, commit?, evidence, accepted }]: a person's decision that one specific finding is a false positive (rule + file, and for history
@@ -22,7 +23,7 @@
 // Deny-list: --denylist FILE, or $BOUNDARY_DENYLIST (a path), or ~/.config/boundary/denylist.txt. One term per line, '#' comments, case-insensitive; "re:..." is a regular expression.
 // Exit status: 1 when there is an error (or any warning with --strict), 0 otherwise.
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, mkdtempSync, rmSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { inflateSync, inflateRawSync } from "node:zlib";
 import { homedir, tmpdir } from "node:os";
@@ -30,8 +31,29 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 
 export const CONTRACT = "ipb-boundary/1";
+const DATA_EXT = new Set([".pdf", ".csv", ".tsv", ".glb", ".gltf", ".stp", ".step", ".vsdx", ".zip", ".7z", ".rar", ".tar", ".gz", ".tgz", ".xlsx", ".xls", ".xlsm", ".docx", ".doc", ".pptx", ".ppt", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".prn", ".bin", ".dat", ".obj", ".stl", ".3mf", ".fbx", ".mp4", ".mov", ".wasm", ".sldprt", ".sldasm", ".slddrw", ".igs", ".iges", ".x_t", ".x_b", ".sat", ".dwg", ".dxf", ".pcbdoc", ".schdoc", ".prjpcb", ".pcblib", ".schlib", ".intlib", ".brd", ".sch", ".gbr", ".drl", ".ipc"]);
+const CODE_DIRS_DEFAULT = ["vendor/", "node_modules/", ".github/"];
 const argv = process.argv.slice(2);
 const flag = (n) => argv.includes(n), opt = (n) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : null; };
+if (flag("--verify-samples")) {                                          // runs on a plain directory: the CUI side's mirror of a public repository
+  const dir = opt("--verify-samples"), mfile = path.join(dir || "", "data-boundary", "manifest.json");
+  if (!dir || !existsSync(mfile)) { console.error(`--verify-samples needs a directory that holds data-boundary/manifest.json (${dir || "none given"})`); process.exit(2); }
+  const mf = JSON.parse(readFileSync(mfile, "utf8")), missing = [], changed = [], ok = [];
+  for (const [f, v] of Object.entries(mf.files || {})) {
+    const fp = path.join(dir, f); if (!existsSync(fp)) { missing.push(f); continue; }
+    (createHash("sha256").update(readFileSync(fp)).digest("hex") === v.sha256 ? ok : changed).push(f);
+  }
+  const extra = [];
+  (function walk(d, rel) { for (const e of readdirSync(d, { withFileTypes: true })) { if (e.name === ".git" || e.name === "node_modules") continue; const r = rel ? `${rel}/${e.name}` : e.name;
+    if (e.isDirectory()) walk(path.join(d, e.name), r); else if (DATA_EXT.has(path.extname(e.name).toLowerCase()) && !(mf.codeDirs || CODE_DIRS_DEFAULT).some((c) => r.startsWith(c)) && !mf.files[r]) extra.push(r); } })(dir, "");
+  const total = Object.keys(mf.files || {}).length, statuses = {}; for (const v of Object.values(mf.files || {})) statuses[v.status] = (statuses[v.status] || 0) + 1;
+  console.log(`mirror ${dir} against its manifest (${CONTRACT}): ${ok.length}/${total} files match (${Object.entries(statuses).map(([k, n]) => `${n} ${k}`).join(", ") || "none listed"})`);
+  for (const f of missing.slice(0, 40)) console.log(`  ERROR mirror.missing  ${f}`);
+  for (const f of changed.slice(0, 40)) console.log(`  ERROR mirror.changed  ${f}  (differs from the recorded hash: not the public copy)`);
+  for (const f of extra.slice(0, 10)) console.log(`  NOTE  mirror.extra    ${f}  (a data file the public manifest does not list: yours, not the public set)`);
+  console.log(`result: ${missing.length + changed.length} error(s), ${extra.length} note(s)`);
+  process.exit(missing.length + changed.length ? 1 : 0);
+}
 const list = (n) => { const i = argv.indexOf(n); if (i < 0) return []; const out = []; for (let k = i + 1; k < argv.length && !argv[k].startsWith("--"); k++) out.push(argv[k]); return out; };
 
 // ---------------------------------------------------------------- rules. Patterns are assembled from fragments so this file contains no literal marking of its own.
@@ -51,11 +73,9 @@ const RULES = [
     re: [new RegExp(j("COMPANY\\s+PROPRIETARY"), "i"), new RegExp(j("PROPRIETARY\\s+(?:AND|&)\\s+CONFIDENTIAL"), "i"), new RegExp(j("PROPRIETARY\\s+INFORMATION"), "i"), new RegExp(j("\\bPRO", "PIN\\b"))] },
 ];
 const TEXT_EXT = new Set([".md", ".txt", ".js", ".mjs", ".cjs", ".ts", ".json", ".csv", ".tsv", ".svg", ".html", ".htm", ".css", ".xml", ".yml", ".yaml", ".py", ".sh", ".ps1", ".vbs", ".prn", ".toml", ".ini", ".cfg", ".gitignore", ".lock", ".rst", ".tex", ".sql", ".bat"]);
-const DATA_EXT = new Set([".pdf", ".csv", ".tsv", ".glb", ".gltf", ".stp", ".step", ".vsdx", ".zip", ".7z", ".rar", ".tar", ".gz", ".tgz", ".xlsx", ".xls", ".xlsm", ".docx", ".doc", ".pptx", ".ppt", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".prn", ".bin", ".dat", ".obj", ".stl", ".3mf", ".fbx", ".mp4", ".mov", ".wasm", ".sldprt", ".sldasm", ".slddrw", ".igs", ".iges", ".x_t", ".x_b", ".sat", ".dwg", ".dxf", ".pcbdoc", ".schdoc", ".prjpcb", ".pcblib", ".schlib", ".intlib", ".brd", ".sch", ".gbr", ".drl", ".ipc"]);
 const FORBIDDEN_EXT = new Map([[".sldprt", "native CAD"], [".sldasm", "native CAD"], [".slddrw", "native CAD drawing"], [".igs", "CAD exchange"], [".iges", "CAD exchange"], [".x_t", "Parasolid"], [".x_b", "Parasolid"], [".sat", "ACIS"],
   [".dwg", "CAD drawing"], [".dxf", "CAD drawing"], [".pcbdoc", "native ECAD"], [".schdoc", "native ECAD"], [".prjpcb", "native ECAD"], [".pcblib", "native ECAD"], [".schlib", "native ECAD"], [".intlib", "native ECAD"],
   [".pem", "key material"], [".key", "key material"], [".p12", "key material"], [".pfx", "key material"], [".eml", "mailbox"], [".msg", "mailbox"], [".pst", "mailbox"], [".ost", "mailbox"], [".env", "environment secrets"]]);
-const CODE_DIRS_DEFAULT = ["vendor/", "node_modules/", ".github/"];
 const MAX_TEXT = 40 * 1024 * 1024;
 const ARCHIVE_REVIEWED = new Set(), ARCHIVE_LISTED = new Set();                                  // archives the manifest lists as reviewed: native files inside are expected there
 
