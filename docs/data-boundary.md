@@ -111,6 +111,7 @@ Generic steps; the organisation's incident procedure takes precedence and starts
 5. Name the CUI-side repositories and where they live, so the kit in `tools/cui-side-kit/` can be pinned to their remotes (section 11).
 6. Who is "a person with authority" for `owner-attested-public` and for a release (section 6).
 7. PcbPrj-re: switch Pages to a workflow deploy that needs the `boundary` check (C7), or accept that it cannot be gated.
+8. **Tags and old branches are refs too.** ipb_viz holds six `archive/*` tags (about 20 to 140 commits each, October 2026), including `archive/dev/templates`, the former template-picker branch whose commit message calls the template folder CUI, and `archive/e2e-results` / `archive/test/e2e-hydro-drawings` (test output against the Hydro material). The scanner reads them as part of the history and found no marking and no data file in them apart from one code literal that tests for a banner prefix; but they are public, fetchable and unneeded: delete them (or move them to the private side) unless a person decides they are public material.
 
 ## 11. The CUI side's half
 
