@@ -63,6 +63,8 @@ thread B-spline faces are meshed from their boundary only; tessellation density 
 
 ## Data handling
 
+The data-boundary contract (`docs/data-boundary.md`, `ipb-boundary/1`) governs this repository and its two public siblings: nothing controlled is committed to any branch, every data file needs a record in `data-boundary/manifest.json`, and `node tools/boundary-check.mjs` (CI runs it on every push; `tools/install-boundary-hooks.sh` runs it from git) checks it. The helper converts on the local machine only.
+
 This repo holds code and public test references only. CAD files and converted models are git-ignored on purpose;
 program or facility data must never be committed here.
 

@@ -1,0 +1,4 @@
+#!/bin/sh
+# Data-boundary check on what is about to be committed (docs/data-boundary.md). Bypassable with --no-verify: CI is the gate that cannot be bypassed.
+command -v node >/dev/null 2>&1 || { echo "boundary: node is required for the commit check" >&2; exit 1; }
+exec node "$(git rev-parse --show-toplevel)/tools/boundary-check.mjs" --staged

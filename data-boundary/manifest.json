@@ -1,0 +1,9 @@
+{
+ "contract": "ipb-boundary/1",
+ "codeDirs": [
+  "vendor/",
+  "node_modules/",
+  ".github/"
+ ],
+ "files": {}
+}
