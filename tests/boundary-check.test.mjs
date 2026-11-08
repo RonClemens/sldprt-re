@@ -146,6 +146,21 @@ R.put("notes/other.txt", `${CUI_BANNER}\n`); R.commit("another");
 t(R.run().code === 1 && /other\.txt/.test(R.run().out), "the acceptance covers that file and rule only: the same marking elsewhere still fails");
 R.done();
 
+// ---- a mirror of a public repository, verified without git
+R = repo(); R.put("data/a.csv", "a,b\n1,2\n"); R.put("data/b.csv", "c,d\n3,4\n"); R.commit("data");
+R.run(["--init-manifest"]); R.run(["--accept", "data/a.csv", "data/b.csv", "--class", "synthetic", "--evidence", "made for tests"]); R.commit("manifest");
+const mirror = mkdtempSync(join(tmpdir(), "bnd-mirror-")), cp = (f) => { mkdirSync(dirname(join(mirror, f)), { recursive: true }); writeFileSync(join(mirror, f), readFileSync(join(R.d, f))); };
+for (const f of ["data/a.csv", "data/b.csv", "data-boundary/manifest.json"]) cp(f);
+const vs = (extra = {}) => { const r2 = spawnSync("node", [TOOL, "--verify-samples", mirror], { cwd: tmpdir(), encoding: "utf8" }); return { code: r2.status, out: r2.stdout + r2.stderr }; };
+r = vs(); t(r.code === 0 && /2\/2 files match/.test(r.out), "a faithful mirror verifies, run from a directory that is not a git repository");
+writeFileSync(join(mirror, "data/b.csv"), "c,d\n3,5\n"); r = vs();
+t(r.code === 1 && /mirror\.changed\s+data\/b\.csv/.test(r.out), "a file that differs from the recorded hash is an error: not the public copy");
+rmSync(join(mirror, "data/b.csv")); r = vs(); t(r.code === 1 && /mirror\.missing\s+data\/b\.csv/.test(r.out), "a missing file is an error");
+cp("data/b.csv"); writeFileSync(join(mirror, "private.csv"), "x\n"); r = vs();
+t(r.code === 0 && /mirror\.extra\s+private\.csv/.test(r.out), "a data file of the mirror's own that the manifest does not list is only a note: it is yours, not the public set");
+t(spawnSync("node", [TOOL, "--verify-samples", tmpdir()], { encoding: "utf8" }).status === 2, "a directory without a manifest is refused");
+rmSync(mirror, { recursive: true, force: true }); R.done();
+
 // ---- this repository itself
 const self = spawnSync("node", [TOOL], { cwd: join(import.meta.dirname, ".."), encoding: "utf8" });
 t(self.status === 0 && /0 error/.test(self.stdout), `this repository passes its own check (${(self.stdout.match(/result: (.*)/) || [])[1]})`);

@@ -13,6 +13,30 @@ until **each CUI-side repository adopts it**. Copy `tools/cui-side-kit/` into th
 6. **Run the same check on anything that could travel**: `node tools/boundary-check.mjs --range` (with the private deny-list) on any patch proposed for a public repository, before a person reviews it (contract section 6).
 7. **Keep the deny-list private and current**: one term per line at `~/.config/boundary/denylist.txt` on each person's machine and as the `BOUNDARY_DENYLIST` secret on the public repositories. It is never committed anywhere public.
 
+## Mirroring and testing with the public samples
+
+Everything on a public repository's `main` is public, so the CUI side may mirror it, pull it and test with it. What is there, and what is not (as of 2026-11-08):
+
+| Repository | Data on `main` | Status in its manifest |
+|---|---|---|
+| ipb_viz | 47 files, about 84 MB: `tools/examples/` (bike, brick house, enclosure, demo, nested STEP rack, block diagrams, the real SolidWorks robot-arm Pack-and-Go sample with placeholder drawings, the federated enclosure + Altium board + harness set), `sources/Hydro_Docs/` (the drawing package and O&M manual), `tools/examples/hydro/` (the converted Hydro assembly, BOM, drawings, index), `docs/IADSProgrammingGuide.pdf` | 15 Hydro files `owner-attested-public`, 9 federated files `generated`, 23 `unreviewed` (still public; awaiting a person's decision) |
+| PcbPrj-re | 58 files, about 166 MB: `samples/` (five open-hardware boards as SVG schematics, glTF boards, link tables; upstream repository, pinned commit and licence in `samples/sources.json`), `docs/` screenshots | `unreviewed` (grandfathered; open-licence origin documented) |
+| sldprt-re | none by design: native CAD, archives, glTF and converted models are git-ignored | none |
+
+**Not on `main`, so a mirror of `main` alone cannot test it:**
+- **The native Hydro assembly** (`Hydro_CAD.zip`, 440 SolidWorks files): only what was derived from it is committed. Every sldprt-re command that takes it (`survey.py`, `batch.py`, `structure.py`, the progressive import) needs the file itself, and sldprt-re's `.gitignore` refuses native CAD and archives. It would have to be published some other way (a release asset with its SHA-256 recorded in the manifest) or supplied by the CUI side from its own copy.
+- **sldprt-re's regression inputs:** `tests/regress.py` clones `github.com/ros/solidworks_urdf_exporter` at test time (unpinned, depth 1) and compares with `tests/expected.json`. A CUI-side mirror needs network access to that repository, or its own mirror of it.
+- **PcbPrj-re's upstream designs:** `tools/build_samples.py --fetch` clones each upstream repository at its pinned commit; the committed `samples/` is the derived output. Rebuilding needs those upstream hosts.
+- **Generated outputs that need extra tools** (the enclosure and brick-house drawing PDFs need `pymupdf` to regenerate); the committed copies are what the tests use.
+
+**Proving the mirror is the public set.** In the mirror of a public repository:
+
+```bash
+node tools/boundary-check.mjs --verify-samples <mirror-dir>     # every file its manifest lists is present with the recorded SHA-256; data files it does not list are noted as yours
+```
+
+Run it after each sync, next to `verify-vendored.sh`. It needs only Node and the mirror's own `data-boundary/manifest.json`; no git, no network. Files of your own (private samples) in the same folder are reported as `mirror.extra`: keep them in a separate directory of the CUI repository, never inside the mirror, so a sync never overwrites them and a push never carries them.
+
 ## Release checklist (CUI -> public, code or documentation only)
 
 - [ ] The change can be explained without the data.
