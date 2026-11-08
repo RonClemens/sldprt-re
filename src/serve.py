@@ -138,8 +138,8 @@ class Server:
     def extract_drawings(s, j, src):
         """SolidWorks drawings (.SLDDRW) in the upload: a preview image per sheet plus the models each references.
         Runs alongside the conversion and reports with one 'drawings' event when done: key (same normalization as
-        part_key, so the viewer matches it to a part or assembly by name), filename, sheets [{idx, name, w, h}]
-        (idx addresses GET /jobs/<id>/sheets/<idx>.png), refs (part_key of each referenced model)."""
+        part_key, so the viewer matches it to a part or assembly by name), filename, sheets [{idx, name, w, h, nativeSize?}]
+        (idx addresses GET /jobs/<id>/sheets/<idx>.png; nativeSize is the best-effort sheet size read from the file, see slddrw.py), refs (part_key of each referenced model)."""
         try:
             files = walk(src, '.slddrw')
             if not files: return
@@ -151,11 +151,12 @@ class Server:
                 try: d = read_drawing(f)
                 except Exception: continue
                 sheets = []
-                for name, png in d['sheets']:
+                for k, (name, png) in enumerate(d['sheets']):
                     idx = len(j.sheet_files); path = os.path.join(sdir, '%d.png' % idx)
                     with open(path, 'wb') as fh: fh.write(png)
                     j.sheet_files.append(path); w, h = png_size(png)
-                    sheets.append(dict(idx=idx, name=name, w=w, h=h))
+                    sz = d.get('sizes') or []; ns = sz[k] if k < len(sz) else None
+                    sheets.append(dict(idx=idx, name=name, w=w, h=h, **({'nativeSize': ns} if ns else {})))
                 if sheets: out.append(dict(key=part_key(os.path.basename(f)), filename=os.path.basename(f), sheets=sheets, refs=[part_key(r) for r in d['refs']]))
             if out: j.emit('drawings', drawings=out)
         except Exception: pass     # a drawing the reader cannot make sense of must never affect the import

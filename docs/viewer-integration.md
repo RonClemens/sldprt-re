@@ -69,10 +69,10 @@ so `new THREE.Matrix4().fromArray(m)` applies directly.
   `configs` holds the same fields per configuration (a PDM setup usually sets the part number there): a component instance's `config` (see `plan`) names the one it uses.
   This service only reads the properties; what a part number means for a model is the viewer's decision.
 - `drawings` (sent once, a little after `plan`, only when the upload held `.SLDDRW` files; read alongside the conversion):
-  `{drawings:[{key, filename, sheets:[{idx, name, w, h}], refs:[partKey]}]}`. `key` is the drawing's file name run through the same
+  `{drawings:[{key, filename, sheets:[{idx, name, w, h, nativeSize?}], refs:[partKey]}]}`. `key` is the drawing's file name run through the same
   normalization as a part key, so match it to a part or assembly by name exactly as `docs` is; `refs` are the part keys of the models the
   drawing lists as referenced (its components, not a per-sheet link: the file does not record which model each sheet shows). Each sheet's
-  `idx` addresses `GET /jobs/{job}/sheets/{idx}.png`.
+  `idx` addresses `GET /jobs/{job}/sheets/{idx}.png`. `nativeSize` (present only when found) is the sheet format the file names, read from its definition stream as text (`{system: "solidworks", style: "A3", standard: "ISO" | "ANSI", orientation, via: "text-scan", confidence: "low", scope: "sheet" | "document"}`): **best effort and unverified against real drawings** (none was available when it was written); it reports nothing rather than guess. Check it on a real file with `python3 src/slddrw.py FILE.SLDDRW`.
   `docs` maps a part key to the drawing PDF(s) the upload bundled under that same filename stem (matched purely by name --
   there is no cross-reference for this in the component tree itself, so an oddly-named drawing simply won't match). Each
   entry's `idx` addresses `GET /jobs/{job}/docs/{idx}.pdf`; `filename` is the original name, for display and for picking
