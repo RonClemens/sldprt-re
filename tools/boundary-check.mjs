@@ -18,6 +18,8 @@
 //        node tools/boundary-check.mjs --verify-samples DIR          on a mirror of a public repository (no git needed): every file its manifest lists is there with the recorded hash; extra data files are noted
 //        node tools/boundary-check.mjs --list-unreviewed             the grandfathered files by size, with the suggested class and note (what the owner still has to decide)
 //        node tools/boundary-check.mjs --rehash                     re-record hashes of listed files that changed on purpose (generated examples): review the diff first
+// External assets (a release asset too large for git): manifest.external { NAME: { url, sha256, size, class, status, evidence, reviewed } }. The run checks the record is well formed; --verify-samples DIR
+// also hashes DIR/NAME (or DIR/external/NAME) when the file is there, and notes the URL to download it from when it is not. The asset itself is never committed.
 // Accepted findings: data-boundary/accepted-findings.json, [{ rule, file, commit?, evidence, accepted }]: a person's decision that one specific finding is a false positive (rule + file, and for history
 // findings the commit prefix). Keep it small, protected by CODEOWNERS, and prefer rewording the text. Add one with --accept-finding RULE FILE [COMMIT] --evidence "text".
 // Deny-list: --denylist FILE, or $BOUNDARY_DENYLIST (a path), or ~/.config/boundary/denylist.txt. One term per line, '#' comments, case-insensitive; "re:..." is a regular expression.
@@ -33,6 +35,7 @@ import { createInterface } from "node:readline";
 export const CONTRACT = "ipb-boundary/1";
 const DATA_EXT = new Set([".pdf", ".csv", ".tsv", ".glb", ".gltf", ".stp", ".step", ".vsdx", ".zip", ".7z", ".rar", ".tar", ".gz", ".tgz", ".xlsx", ".xls", ".xlsm", ".docx", ".doc", ".pptx", ".ppt", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".prn", ".bin", ".dat", ".obj", ".stl", ".3mf", ".fbx", ".mp4", ".mov", ".wasm", ".sldprt", ".sldasm", ".slddrw", ".igs", ".iges", ".x_t", ".x_b", ".sat", ".dwg", ".dxf", ".pcbdoc", ".schdoc", ".prjpcb", ".pcblib", ".schlib", ".intlib", ".brd", ".sch", ".gbr", ".drl", ".ipc"]);
 const CODE_DIRS_DEFAULT = ["vendor/", "node_modules/", ".github/"];
+const CLASSES = ["synthetic", "open-licence", "third-party", "owner-attested-public"];
 const argv = process.argv.slice(2);
 const flag = (n) => argv.includes(n), opt = (n) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : null; };
 if (flag("--verify-samples")) {                                          // runs on a plain directory: the CUI side's mirror of a public repository
@@ -43,6 +46,12 @@ if (flag("--verify-samples")) {                                          // runs
     const fp = path.join(dir, f); if (!existsSync(fp)) { missing.push(f); continue; }
     (createHash("sha256").update(readFileSync(fp)).digest("hex") === v.sha256 ? ok : changed).push(f);
   }
+  const extNames = Object.entries(mf.external || {}), extMissing = [], extChanged = [], extOk = [];
+  for (const [n, v] of extNames) {
+    const fp = [path.join(dir, n), path.join(dir, "external", n)].find((x) => existsSync(x));
+    if (!fp) { extMissing.push([n, v.url]); continue; }
+    (createHash("sha256").update(readFileSync(fp)).digest("hex") === v.sha256 ? extOk : extChanged).push(n);
+  }
   const extra = [];
   (function walk(d, rel) { for (const e of readdirSync(d, { withFileTypes: true })) { if (e.name === ".git" || e.name === "node_modules") continue; const r = rel ? `${rel}/${e.name}` : e.name;
     if (e.isDirectory()) walk(path.join(d, e.name), r); else if (DATA_EXT.has(path.extname(e.name).toLowerCase()) && !(mf.codeDirs || CODE_DIRS_DEFAULT).some((c) => r.startsWith(c)) && !mf.files[r]) extra.push(r); } })(dir, "");
@@ -51,8 +60,11 @@ if (flag("--verify-samples")) {                                          // runs
   for (const f of missing.slice(0, 40)) console.log(`  ERROR mirror.missing  ${f}`);
   for (const f of changed.slice(0, 40)) console.log(`  ERROR mirror.changed  ${f}  (differs from the recorded hash: not the public copy)`);
   for (const f of extra.slice(0, 10)) console.log(`  NOTE  mirror.extra    ${f}  (a data file the public manifest does not list: yours, not the public set)`);
-  console.log(`result: ${missing.length + changed.length} error(s), ${extra.length} note(s)`);
-  process.exit(missing.length + changed.length ? 1 : 0);
+  for (const n of extOk) console.log(`  OK    external.match   ${n}`);
+  for (const [n, u] of extMissing) console.log(`  NOTE  external.absent  ${n}  (release asset, not in the mirror: download ${u} and check sha256 ${mf.external[n].sha256})`);
+  for (const n of extChanged) console.log(`  ERROR external.changed ${n}  (differs from the recorded hash: not the public copy)`);
+  console.log(`result: ${missing.length + changed.length + extChanged.length} error(s), ${extra.length + extMissing.length} note(s)`);
+  process.exit(missing.length + changed.length + extChanged.length ? 1 : 0);
 }
 const list = (n) => { const i = argv.indexOf(n); if (i < 0) return []; const out = []; for (let k = i + 1; k < argv.length && !argv[k].startsWith("--"); k++) out.push(argv[k]); return out; };
 
@@ -247,6 +259,11 @@ async function main() {
   const deny = loadDenylist(), mf = loadManifest(), hashed = loadHashed(path.dirname(manifestPath)), findings = [];
   if (flag("--history")) {
     const r = await history(deny, hashed); report(r.findings, { mode: "history", scanned: `${r.scannedLines} added lines`, deny, hashed }); return;
+  }
+  for (const [n, v] of Object.entries(mf.external || {})) {
+    const bad = !/^https:\/\/[^\s]+$/.test(v.url || "") ? "url (https required)" : !/^[0-9a-f]{64}$/.test(v.sha256 || "") ? "sha256" : !CLASSES.includes(v.class) ? "class" : !(v.evidence || "").trim() ? "evidence" : null;
+    if (bad) findings.push({ rule: "external.malformed", sev: "error", file: n, line: null, why: `external asset record has a missing or invalid ${bad}` });
+    else if (v.status !== "reviewed") findings.push({ rule: "external.unreviewed", sev: "warn", file: n, line: null, why: "an external asset not yet reviewed by a person" });
   }
   const files = filesFor(), tracked = new Set(split0(git("ls-files", "-z")));
   for (const [k, v] of Object.entries(mf.files)) { ARCHIVE_LISTED.add(k); if (v.status === "reviewed" || v.status === "generated") ARCHIVE_REVIEWED.add(k); }

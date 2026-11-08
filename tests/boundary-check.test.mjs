@@ -160,6 +160,25 @@ cp("data/b.csv"); writeFileSync(join(mirror, "private.csv"), "x\n"); r = vs();
 t(r.code === 0 && /mirror\.extra\s+private\.csv/.test(r.out), "a data file of the mirror's own that the manifest does not list is only a note: it is yours, not the public set");
 t(spawnSync("node", [TOOL, "--verify-samples", tmpdir()], { encoding: "utf8" }).status === 2, "a directory without a manifest is refused");
 rmSync(mirror, { recursive: true, force: true }); R.done();
+// external (release-asset) records: well-formed, absent is a note, present is hashed
+{
+  const X = repo(); X.put("data/a.csv", "a,b\n1,2\n"); X.commit("data"); X.run(["--init-manifest"]);
+  X.run(["--accept", "data/a.csv", "--class", "synthetic", "--evidence", "made for tests"]);
+  const mp = join(X.d, "data-boundary/manifest.json"), m = JSON.parse(readFileSync(mp, "utf8")), body = Buffer.from("big archive"), h = createHash("sha256").update(body).digest("hex");
+  m.external = { "big.zip": { url: "https://example.org/big.zip", sha256: h, size: body.length, class: "owner-attested-public", status: "reviewed", evidence: "test", reviewed: "2026-01-01" } };
+  writeFileSync(mp, JSON.stringify(m)); X.commit("manifest");
+  t(X.run([]).code === 0, "a well-formed external record passes the run");
+  const mir = mkdtempSync(join(tmpdir(), "bnd-ext-")); mkdirSync(join(mir, "data-boundary")); mkdirSync(join(mir, "data"));
+  writeFileSync(join(mir, "data-boundary/manifest.json"), JSON.stringify(m)); writeFileSync(join(mir, "data/a.csv"), "a,b\n1,2\n");
+  const ve = () => { const q = spawnSync("node", [TOOL, "--verify-samples", mir], { cwd: tmpdir(), encoding: "utf8" }); return { code: q.status, out: q.stdout + q.stderr }; };
+  r = ve(); t(r.code === 0 && /external\.absent\s+big\.zip/.test(r.out) && /example\.org\/big\.zip/.test(r.out), "an absent external asset is a note with its URL and hash");
+  writeFileSync(join(mir, "big.zip"), body); r = ve(); t(r.code === 0 && /external\.match\s+big\.zip/.test(r.out), "a present external asset with the recorded hash matches");
+  writeFileSync(join(mir, "big.zip"), "tampered"); r = ve(); t(r.code === 1 && /external\.changed\s+big\.zip/.test(r.out), "an external asset with another hash is an error");
+  m.external["big.zip"].url = "http://example.org/big.zip"; writeFileSync(mp, JSON.stringify(m)); X.commit("bad");
+  r = X.run([]); t(r.code === 1 && /external\.malformed/.test(r.out + (r.err || "")), "an external record without https is malformed");
+  rmSync(mir, { recursive: true, force: true }); X.done();
+}
+
 
 // ---- this repository itself
 const self = spawnSync("node", [TOOL], { cwd: join(import.meta.dirname, ".."), encoding: "utf8" });
