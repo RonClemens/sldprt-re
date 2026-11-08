@@ -1,0 +1,46 @@
+name: Data boundary
+
+# docs/data-boundary.md. Runs on every push and pull request, and weekly over the whole history; the Pages deploy calls it and does not run unless it passes.
+on:
+  push:
+  pull_request:
+  workflow_call:
+    inputs:
+      skip_history:
+        description: "'yes' for the Pages deploy: it publishes the tree, so the tree check gates it; the history scan runs on every push and weekly"
+        type: string
+        default: ""
+  schedule:
+    - cron: "17 5 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  boundary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0            # the whole history: a shallow clone would leave the past unscanned
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: poppler (reads text in embedded fonts)
+        run: sudo apt-get install -y --no-install-recommends poppler-utils >/dev/null
+      - name: Private deny-list (optional)
+        # Repository secret BOUNDARY_DENYLIST: one term per line (docs/data-boundary.md). Without it the check still covers markings, file types, the manifest and hashed terms, and says so.
+        env:
+          BOUNDARY_DENYLIST_SECRET: ${{ secrets.BOUNDARY_DENYLIST }}
+        run: |
+          if [ -n "$BOUNDARY_DENYLIST_SECRET" ]; then printf '%s\n' "$BOUNDARY_DENYLIST_SECRET" > "$RUNNER_TEMP/denylist.txt"; echo "BOUNDARY_DENYLIST=$RUNNER_TEMP/denylist.txt" >> "$GITHUB_ENV"; fi
+      - name: Boundary check, files as published
+        run: node tools/boundary-check.mjs
+      - name: Fetch pull-request refs (their commits are downloadable too)
+        if: ${{ inputs.skip_history != 'yes' }}
+        run: git fetch --quiet origin '+refs/pull/*/head:refs/remotes/pr/*' || true
+      - name: Boundary check, the whole history (all branches, tags and pull-request refs)
+        if: ${{ inputs.skip_history != 'yes' }}
+        run: node tools/boundary-check.mjs --history
+      - name: Boundary tool tests
+        run: node tests/boundary-check.test.mjs
