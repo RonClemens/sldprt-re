@@ -46,6 +46,10 @@ Run it after each sync, next to `verify-vendored.sh`. It needs only Node and the
 - [ ] The pull-request title and text are generic.
 - [ ] A person with authority has read the diff and approved it.
 
+## Reporting a problem found on real data
+
+Contract section 6a (`docs/data-boundary.md`): masked Issue, never a committed log; triage on the public samples first; a masked diagnostic from the public side for a defect that only real files show.
+
 ## If something went the wrong way
 
 Stop, tell the security officer, and follow the organisation's procedure first; then section 7 of the contract. Do not "fix" it by deleting the file and pushing again.
