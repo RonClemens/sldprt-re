@@ -73,6 +73,17 @@ Only code or documentation, and only by this route:
 5. The pull-request text is generic (what the code does, not what it was for).
 6. A person with authority reads the diff and approves; the approval is the pull request's.
 
+## 6a. Reporting a problem that only shows on controlled data
+
+A defect seen only on real files (a test that finds nothing, a conversion that fails) is reported **without** the data. The same rules apply to every repository that vendors or develops against the public side.
+
+1. **Report, do not attach.** The channel is a masked **Native-file check** Issue (the template under `.github/ISSUE_TEMPLATE/`) or the masked report template (`tools/cui-side-kit/masked-report-template.md`), read by a person before it is posted. Not a committed file: a commit is published at once (Pages), and stays in history, forks and pull-request refs.
+2. **What may go in:** the command run (without paths); pass or fail; counts; SHA-256 hashes; field names and message types; versions (Node, Python, browser, the pinned tags and commits); error text with every name, number, URL and path removed. **What never goes in:** part, drawing or program numbers, designators of a real board, file, host or user names, text read from a file or sheet, screenshots, console output, logs.
+3. **Triage on the public samples first.** Run the same test on the public samples, on the controlled machine. No result there either: the environment (versions, a missing package, a blocked port, the page's Content-Security-Policy) is the cause; report versions and the generic error. Works on the samples but not on real data: the cause is in the real files; ask the public side for a **masked diagnostic**, a script written and reviewed in the public repository that prints only counts, field names and hashes, then run it on the controlled side and report what it printed.
+4. **The public side reproduces with a synthetic fixture** (section 6, item 3), never with a real file whose names were changed.
+5. **If a log must live in the repository** it is produced from synthetic or public data by a tracked script and recorded in `data-boundary/manifest.json` as generated (`--accept ... --class synthetic --generated <script>`). A real file or log needs a person's attestation, never an AI session's; a log from a controlled run is never accepted. When in doubt, do not commit it.
+6. **A session on the public side that is handed pasted CUI-side content** treats it as possibly sensitive: it does not repeat it, quote it in a commit, issue or comment, or place it in a file. If it carries real names or numbers, the session stops and tells the owner (section 7).
+
 ## 7. If a spill is suspected
 
 Generic steps; the organisation's incident procedure takes precedence and starts first.
