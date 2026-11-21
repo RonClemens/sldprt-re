@@ -43,10 +43,10 @@ def _runs_from_chars(chars):
         cs.sort(key=lambda c: c['x'] if rot == 0 else c['y'])
         cur = [cs[0]]; parts = []
         for prev, c in zip(cs, cs[1:]):
-            a0 = (prev['x'] + prev['adv']) if rot == 0 else (prev['y'] + prev['adv']); a1 = c['x'] if rot == 0 else c['y']
-            if a1 - a0 > 2.0 * size: parts.append(cur); cur = [c]
+            a0 = prev['bbox'][2] if rot == 0 else prev['bbox'][3]; a1 = c['bbox'][0] if rot == 0 else c['bbox'][1]    # glyph extents (pdfminer's `adv` is in em units, not points)
+            if a1 - a0 > 3.5 * size: parts.append(cur); cur = [c]
             else:
-                if a1 - a0 > 0.15 * size and prev['c'] != ' ' and c['c'] != ' ': cur.append(dict(c=' ', x=prev['x'], y=prev['y'], adv=0, size=size, rot=rot, bbox=prev['bbox']))
+                if a1 - a0 > 0.3 * size and prev['c'] != ' ' and c['c'] != ' ': cur.append(dict(c=' ', x=prev['x'], y=prev['y'], adv=0, size=size, rot=rot, bbox=prev['bbox']))
                 cur.append(c)
         parts.append(cur)
         for p in parts:
@@ -85,11 +85,18 @@ class Geo:
         s.arcs = []     # [cx, cy, r, bbox]
         s.tris = []     # filled triangles: 3 points
         s.boxes = []    # axis-aligned rectangles [x0, y0, x1, y1]
+        s.glyphs = []   # bounding boxes of small filled curve shapes (outlined text, parentheses)
         s.claimed = set()
 
 
 def _add_path(geo, ops, fill, stroke, width):
     cur = None; start = None; poly = []; curve_pts = []; polys = []
+    if stroke and not fill and len(ops) >= 9 and ops[0][0] == 'm' and all(o[0] == 'l' for o in ops[1:]):       # a shallow many-segment bow: a parenthesis drawn as a polyline
+        xs = [o[1][0] for o in ops]; ys = [o[1][1] for o in ops]; w_, h_ = max(xs) - min(xs), max(ys) - min(ys)
+        if 8 < max(w_, h_) < 60 and 1.0 < min(w_, h_) < 0.3 * max(w_, h_): geo.glyphs.append([min(xs), min(ys), max(xs), max(ys)])
+    if fill and not stroke and any(o[0] == 'c' for o in ops):
+        xs = [pt[0] for o in ops for pt in o[1:] if isinstance(pt, tuple)]; ys = [pt[1] for o in ops for pt in o[1:] if isinstance(pt, tuple)]
+        if xs and max(xs) - min(xs) < 60 and max(ys) - min(ys) < 60: geo.glyphs.append([min(xs), min(ys), max(xs), max(ys)]); return
     def flush_curves():
         nonlocal curve_pts
         if curve_pts:
@@ -158,21 +165,31 @@ def _bbox_gap(a, b):
 def _inside(inner, outer, m=1.0): return inner[0] >= outer[0] - m and inner[1] >= outer[1] - m and inner[2] <= outer[2] + m and inner[3] <= outer[3] + m
 
 
+SUFFIX_WORDS = {'THRU', 'TYP', 'TYPICAL', 'PLCS', 'PLACES', 'PL', 'EQ', 'EQL', 'SP', 'SPACES', 'REF', 'MAX', 'MIN', 'DEEP', 'DP', 'DIA', 'X', 'EA', 'BSC', 'CSK', 'CBORE', 'C\'BORE', 'DRILL', 'TAP', 'UNC', 'UNF', 'NPT', 'GA', 'AF', 'ALL', 'AROUND', 'OD', 'ID', 'SQ', 'EACH', 'PLACE', 'SIDE', 'SIDES', 'BOTH', 'OPP'}
+
+
 def parse_dim_text(text):
     """-> dict(kind, value, count, suffix, tol(upper, lower or None), basic, reference) or None when the text is not a dimension value."""
     t = text.strip(); basic = reference = False
-    m = re.fullmatch(r'\((.+)\)', t)
-    if m: t = m.group(1).strip(); reference = True
+    for ch, frac in (('\u00bd', ' 1/2'), ('\u00bc', ' 1/4'), ('\u00be', ' 3/4')): t = t.replace(ch, frac)
+    pre = re.match(r'^\((\d+)\)\s+(\S.*)$', t)                 # "(2) 1 1/8" : the instance count in parentheses
+    count = None
+    if pre: count = int(pre.group(1)); t = pre.group(2)
+    elif t.startswith('(') or t.endswith(')'): t = t.strip('() ').strip(); reference = True
+    t = re.sub(r'\s*["\u201d\u2033]\s*$', '', t) if re.search(r'\d\s*["\u201d\u2033]\s*$', t) else t
     m = re.fullmatch(r'\[(.+)\]', t)
     if m: t = m.group(1).strip(); basic = True
-    m = re.match(rf'^(?:(\d+)\s*[xX×]\s*)?([Øø∅⌀]|R)?\s*({NUM})\s*(°)?\s*(?:(±|\+/-|\+-)\s*({NUM}))?\s*(.*)$', t)
+    m = re.match(rf'^(?:(\d+)\s*[xX\u00d7]\s*)?([\u00d8\u00f8\u2205\u2300]|R)?\s*({NUM})\s*(\u00b0)?\s*(?:(\u00b1|\+/-|\+-)\s*({NUM}))?\s*(.*)$', t)
     if not m: return None
     cnt, sym, val, deg, pm, tolv, rest = m.groups()
+    frac = re.match(r'^(\d+)\s*/\s*(\d+)\s*(.*)$', rest)
+    if frac and not deg: val = str(float(val) + int(frac.group(1)) / int(frac.group(2))); rest = frac.group(3)
     kind = 'diameter' if sym and sym != 'R' else 'radius' if sym == 'R' else 'angle' if deg else 'linear'
     suffix = [w for w in re.split(r'\s+', rest.strip()) if w]
-    count = int(cnt) if cnt else None
+    if cnt: count = int(cnt)
     for i, w in enumerate(suffix):
         if w.upper() in ('PLCS', 'PLACES') and i > 0 and suffix[i - 1].isdigit(): count = int(suffix[i - 1]); suffix = suffix[:i - 1] + suffix[i + 1:]; break
+    if any(w.upper().strip('.,') not in SUFFIX_WORDS and not re.fullmatch(r'\d+[\u00b0"]|[\u00b0"]|\d+/\d+', w) for w in suffix): return None    # other words or numbers: a note, a part number, an item number
     tol = None
     if pm: tol = (float(tolv), -float(tolv))
     return dict(kind=kind, value=float(val), count=count, suffix=suffix, tol=tol, basic=basic, reference=reference)
@@ -185,10 +202,12 @@ def _num(s):
 
 
 # ----------------------------------------------------------------------------- the reader
-def read_pdf(path):
+def read_pdf(path, pages=None):
+    """pages: optional list of 1-based page numbers (a 150-page package is slow to read whole)."""
     from pdfminer.high_level import extract_pages
     drawing = Drawing('pdf-vector')
-    for pi, page in enumerate(extract_pages(path), 1):
+    nums = [n - 1 for n in pages] if pages else None
+    for pi, page in zip(pages or iter(int, 1) if False else (pages or range(1, 10 ** 6)), extract_pages(path, page_numbers=nums)):
         chars = []; geo = Geo()
         _walk(page, chars, geo)
         sheet = Sheet(index=pi, size_pt=[round(page.width, 2), round(page.height, 2)])
@@ -199,8 +218,59 @@ def read_pdf(path):
     return drawing
 
 
+def _pt_seg_dist(P, a, b):
+    """distances from many points P (n, 2) to the segment a-b"""
+    a = np.asarray(a, float); b = np.asarray(b, float); ab = b - a; L = float(ab @ ab)
+    t = np.clip(((P - a) @ ab) / max(L, 1e-12), 0, 1)
+    return np.hypot(*(P - (a + t[:, None] * ab)).T)
+
+
+def _rects_from_segs(S):
+    """axis-aligned rectangles drawn as four separate line segments (the usual form in CAD PDF exports): two horizontals with the same extent and verticals joining them"""
+    dx = np.abs(S[:, 2] - S[:, 0]); dy = np.abs(S[:, 3] - S[:, 1])
+    Hs = S[(dy < 0.3) & (dx > 3)]; Vs = S[(dx < 0.3) & (dy > 3)]
+    vidx = {}
+    for x, y0, y1 in zip((Vs[:, 0] + Vs[:, 2]) / 2, np.minimum(Vs[:, 1], Vs[:, 3]), np.maximum(Vs[:, 1], Vs[:, 3])): vidx.setdefault(int(round(x)), []).append((x, y0, y1))
+    hidx = {}
+    for y, x0, x1 in zip((Hs[:, 1] + Hs[:, 3]) / 2, np.minimum(Hs[:, 0], Hs[:, 2]), np.maximum(Hs[:, 0], Hs[:, 2])): hidx.setdefault((int(round(x0)), int(round(x1))), []).append((y, x0, x1))
+    def has_v(x, lo, hi):
+        return any(abs(xx - x) < 0.8 and a <= lo + 0.8 and b >= hi - 0.8 for k in (int(round(x)) - 1, int(round(x)), int(round(x)) + 1) for xx, a, b in vidx.get(k, ()))
+    out = []
+    for (kx0, kx1), lst in hidx.items():
+        ys = sorted({round(y, 1) for y, _, _ in lst})
+        if len(ys) < 2 or len(ys) > 40: continue
+        x0 = min(l[1] for l in lst); x1 = max(l[2] for l in lst)
+        for i in range(len(ys)):
+            for j in range(i + 1, len(ys)):
+                if has_v(x0, ys[i], ys[j]) and has_v(x1, ys[i], ys[j]): out.append([x0, ys[i], x1, ys[j]])
+    return out
+
+
+def _tf(r, x, y):
+    """(x, y) in the text's own frame: u along the reading direction, v up (rot 90 text reads bottom to top)"""
+    return (x, y) if r.rot == 0 else (y, -x)
+
+
+def _read_fraction(main, free):
+    """A fractional dimension (4 21/32") is a whole number plus two rows of digits, numerator above denominator, in the same size, laid inside or just after the whole
+    number's extent. Returns (fraction value, [numerator run, denominator run]) or (None, [])."""
+    def uv(r): return _tf(r, r.ox, r.oy)
+    mu0, mv0 = uv(main)
+    mu1 = (main.bbox[2] if main.rot == 0 else main.bbox[3]) if main.rot == 0 else main.bbox[3]
+    cand = []
+    for r in free:
+        if r.used or r is main or not re.fullmatch(r'\d{1,3}', r.text.strip()) or r.rot != main.rot or abs(r.size - main.size) > 0.35 * main.size: continue
+        u, v = uv(r)
+        if mu0 - 0.5 * main.size <= u <= mu1 + 0.5 * main.size and 0.3 * main.size < abs(v - mv0) < 1.4 * main.size: cand.append((u, v - mv0, r))
+    for ui, vi, ri in cand:
+        for uj, vj, rj in cand:
+            if ri is not rj and vi > 0 > vj and abs(ui - uj) < 0.6 * main.size and int(rj.text) > 0 and int(ri.text) < 10 * int(rj.text): return int(ri.text) / int(rj.text), [ri, rj]
+    return None, []
+
+
 def _read_sheet(sh, runs, geo):
     W, H = sh.size_pt
+    mmpp = MM_PER_PT
     # --- scale
     for r in runs:
         m = re.search(rf'SCALE\s*[:~=]?\s*({NUM})\s*:\s*({NUM})', r.text, re.I)
@@ -211,50 +281,56 @@ def _read_sheet(sh, runs, geo):
                 near = sorted((q for q in runs if re.fullmatch(rf'{NUM}\s*:\s*{NUM}', q.text.strip())), key=lambda q: math.hypot(q.ox - r.ox, q.oy - r.oy))
                 if near and math.hypot(near[0].ox - r.ox, near[0].oy - r.oy) < 120:
                     a, b = re.split(r'\s*:\s*', near[0].text.strip()); sh.scale = float(a) / float(b); sh.scale_text = f'{a}:{b}'; break
-    if sh.scale is None: sh.warnings.append('no sheet scale found: drawn values are not computed')
-    mmpp = MM_PER_PT
-    # --- title block region: the smallest rectangle that encloses a title-block keyword, else none
-    tb = None
-    kw = [r for r in runs if re.search(r'\b(SCALE|MATERIAL|PART NO|DRAWN|SHEET|UNLESS OTHERWISE)\b', r.text, re.I)]
-    cand = [b for b in geo.boxes if (b[2] - b[0]) * (b[3] - b[1]) < 0.35 * W * H and any(_inside(r.bbox, b, 1) for r in kw)]
-    if cand: tb = min(cand, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))
-    border = [b for b in geo.boxes if (b[2] - b[0]) * (b[3] - b[1]) >= 0.35 * W * H]
+    # --- line segments as arrays
+    S = np.array(geo.segs, float).reshape(-1, 5)
+    S = S[np.hypot(S[:, 2] - S[:, 0], S[:, 3] - S[:, 1]) > 1e-6]
+    rects = [list(b) for b in geo.boxes]
+    for r in _rects_from_segs(S) if len(S) else []:
+        if not any(all(abs(a - b) < 0.8 for a, b in zip(r, q)) for q in rects): rects.append(r)
+    # --- title block: the smallest rectangle (not the sheet border) that encloses a title-block keyword
+    border = [b for b in rects if (b[2] - b[0]) * (b[3] - b[1]) >= 0.35 * W * H]
+    kw = [r for r in runs if re.search(r'\b(SCALE|MATERIAL|PART NO|DRAWN|DRWN|SHEET|UNLESS OTHERWISE|TITLE|DWG)\b', r.text, re.I)]
+    cand = [b for b in rects if (b[2] - b[0]) * (b[3] - b[1]) < 0.35 * W * H and any(_inside(r.bbox, b, 1) for r in kw)]
+    tb = max(cand, key=lambda b: (b[2] - b[0]) * (b[3] - b[1])) if cand else None      # the outermost small enclosing rectangle: the whole block, not one cell
+    if tb is not None and sum(1 for r in kw if _inside(r.bbox, tb, 1)) < 2: tb = None
     def in_tb(b): return tb is not None and _inside(b, tb, 1.0)
-    segs = [sg for sg in geo.segs if not in_tb([min(sg[0], sg[2]), min(sg[1], sg[3]), max(sg[0], sg[2]), max(sg[1], sg[3])])]
-    claimed = [False] * len(segs)
-    def claim_seg(pred):
-        for i, sg in enumerate(segs):
-            if not claimed[i] and pred(sg): claimed[i] = True
-    def on_line(sg, a, b, tol=0.6):
-        return _dist_pt_seg((sg[0], sg[1]), a, b) < tol and _dist_pt_seg((sg[2], sg[3]), a, b) < tol
-    def box_edges(b): return (((b[0], b[1]), (b[2], b[1])), ((b[0], b[3]), (b[2], b[3])), ((b[0], b[1]), (b[0], b[3])), ((b[2], b[1]), (b[2], b[3])))
+    sb = np.c_[np.minimum(S[:, 0], S[:, 2]), np.minimum(S[:, 1], S[:, 3]), np.maximum(S[:, 0], S[:, 2]), np.maximum(S[:, 1], S[:, 3])] if len(S) else np.zeros((0, 4))
+    if tb is not None and len(S):
+        keep = ~((sb[:, 0] >= tb[0] - 1) & (sb[:, 1] >= tb[1] - 1) & (sb[:, 2] <= tb[2] + 1) & (sb[:, 3] <= tb[3] + 1))
+        S, sb = S[keep], sb[keep]
+    claimed = np.zeros(len(S), bool)
+    def on_line(a, b, tol=0.6): return (_pt_seg_dist(S[:, 0:2], a, b) < tol) & (_pt_seg_dist(S[:, 2:4], a, b) < tol) if len(S) else np.zeros(0, bool)
     def claim_box(b):
-        for i, sg in enumerate(segs):
-            if any(on_line(sg, p, q) for p, q in box_edges(b)): claimed[i] = True
+        for p, q in (((b[0], b[1]), (b[2], b[1])), ((b[0], b[3]), (b[2], b[3])), ((b[0], b[1]), (b[0], b[3])), ((b[2], b[1]), (b[2], b[3]))): claimed[on_line(p, q)] = True
     for b in border: claim_box(b)                  # the sheet border is not object linework
     # --- datum feature symbols: a small square holding one capital letter, with a triangle joined to it by a short line
     boxes_used = set(); consumed_tris = set(); datums = []
     letters = [r for r in runs if re.fullmatch(r'[A-Z]', r.text.strip())]
-    for bi, b in enumerate(geo.boxes):
+    for bi, b in enumerate(rects):
         w, h = b[2] - b[0], b[3] - b[1]
         if not (8 < w < 40 and abs(w - h) < 0.25 * max(w, h)) or b in border or in_tb(b): continue
+        if min(b[0], W - b[2], b[1], H - b[3]) < 0.04 * W: continue          # the sheet-size / revision boxes in the margin strip
         inside = [r for r in letters if _inside(r.bbox, b, 0.5) and not r.used]
         if len(inside) != 1: continue
         r = inside[0]; r.used = True; boxes_used.add(bi)
         datums.append(Datum(id='', letter=r.text.strip(), pos=[(b[0] + b[2]) / 2, (b[1] + b[3]) / 2]))
-        for ti, t in enumerate(geo.tris):         # the datum triangle: its base centre is joined to the box by a line
+        for ti, t in enumerate(geo.tris):         # the datum triangle: a line joins it to the box
             cx = sum(p[0] for p in t) / 3; cy = sum(p[1] for p in t) / 3
-            if _bbox_gap([cx, cy, cx, cy], [b[0] - 30, b[1] - 30, b[2] + 30, b[3] + 30]) == 0 and any(_bbox_gap([sg[0], sg[1], sg[0], sg[1]], b) < 0.8 or _bbox_gap([sg[2], sg[3], sg[2], sg[3]], b) < 0.8 for sg in segs if _dist_pt_seg((cx, cy), (sg[0], sg[1]), (sg[2], sg[3])) < 4):
-                consumed_tris.add(ti)
-                for i, sg in enumerate(segs):
-                    if _dist_pt_seg((cx, cy), (sg[0], sg[1]), (sg[2], sg[3])) < 4 and not claimed[i]: claimed[i] = True
+            if abs(cx - (b[0] + b[2]) / 2) > 30 + w or abs(cy - (b[1] + b[3]) / 2) > 30 + h: continue
+            join = np.zeros(len(S), bool)
+            if len(S):
+                near_tri = _pt_seg_dist(S[:, 0:2], (cx, cy), (cx, cy)) < 4; near_tri |= _pt_seg_dist(S[:, 2:4], (cx, cy), (cx, cy)) < 4
+                to_box = np.array([_bbox_gap([a, c, a, c], b) < 0.8 for a, c in S[:, 0:2]]) | np.array([_bbox_gap([a, c, a, c], b) < 0.8 for a, c in S[:, 2:4]]) if near_tri.any() else np.zeros(len(S), bool)
+                join = near_tri & to_box
+            if join.any(): consumed_tris.add(ti); claimed[join] = True
         claim_box(b)
     # --- GD&T frames: a wide short rectangle cut into cells by vertical lines, each cell holding text
     frames = []
-    for bi, b in enumerate(geo.boxes):
+    for bi, b in enumerate(rects):
         w, h = b[2] - b[0], b[3] - b[1]
-        if bi in boxes_used or b in border or in_tb(b) or not (w > 2.2 * h and 8 < h < 40): continue
-        divs = sorted({round(sg[0], 1) for sg in segs if abs(sg[0] - sg[2]) < 0.3 and b[0] + 1 < sg[0] < b[2] - 1 and abs(min(sg[1], sg[3]) - b[1]) < 1 and abs(max(sg[1], sg[3]) - b[3]) < 1})
+        if bi in boxes_used or b in border or in_tb(b) or not (w > 2.2 * h and 8 < h < 40) or not len(S): continue
+        vm = (np.abs(S[:, 0] - S[:, 2]) < 0.3) & (S[:, 0] > b[0] + 1) & (S[:, 0] < b[2] - 1) & (np.abs(sb[:, 1] - b[1]) < 1) & (np.abs(sb[:, 3] - b[3]) < 1)
+        divs = sorted({round(x, 1) for x in S[vm, 0]})
         if not divs: continue
         edges = [b[0]] + divs + [b[2]]; cells = []
         inside = [r for r in runs if _inside(r.bbox, b, 0.5) and r.rot == 0 and not r.used]
@@ -262,171 +338,206 @@ def _read_sheet(sh, runs, geo):
             cs = sorted((r for r in inside if lo - 0.5 <= (r.bbox[0] + r.bbox[2]) / 2 <= hi + 0.5), key=lambda r: r.ox)
             for r in cs: r.used = True
             cells.append(' '.join(r.text for r in cs))
-        if not any(cells): continue
+        if not any(cells) or len(cells[0].strip()) > 2: continue
         boxes_used.add(bi)
         fr = GdtFrame(id='', pos=[b[0], b[1], b[2], b[3]], cells=cells)
         c0 = cells[0].strip(); fr.symbol = GDT_SYMBOLS.get(c0[:1]) if c0 else None
         if len(cells) > 1:
             m = re.match(rf'^\s*([Ø∅⌀])?\s*({NUM})\s*(.*)$', cells[1])
-            if m:
-                fr.diameter_zone = bool(m.group(1)); fr.value = float(m.group(2)); fr.modifiers = re.findall(r'\(?\b([MLSPF])\b\)?', m.group(3))
-        for c in cells[2:]:
-            fr.datums += re.findall(r'\b([A-Z])\b', re.sub(r'\([MLSPF]\)', '', c))
-        frames.append(fr)
-        claim_box(b)
-        for i, sg in enumerate(segs):
-            if any(abs(sg[0] - d) < 0.5 and abs(sg[2] - d) < 0.5 and sg[1] >= b[1] - 1 and sg[3] <= b[3] + 1 for d in divs): claimed[i] = True
+            if m: fr.diameter_zone = bool(m.group(1)); fr.value = float(m.group(2)); fr.modifiers = re.findall(r'\(?\b([MLSPF])\b\)?', m.group(3))
+        for c in cells[2:]: fr.datums += re.findall(r'\b([A-Z])\b', re.sub(r'\([MLSPF]\)', '', c))
+        if fr.value is None: boxes_used.discard(bi); continue        # not a feature control frame (a table row)
+        frames.append(fr); claim_box(b); claimed[vm] = True
     # --- arrows
     arrows = []
     for ti, t in enumerate(geo.tris):
         if ti in consumed_tris: continue
-        P = [np.array(p) for p in t]; sides = [(np.linalg.norm(P[(i + 1) % 3] - P[(i + 2) % 3]), i) for i in range(3)]; sides.sort()
+        P = [np.array(p) for p in t]; sides = sorted((np.linalg.norm(P[(i + 1) % 3] - P[(i + 2) % 3]), i) for i in range(3))
         base_len, ia = sides[0]; tip = P[ia]; bm = (P[(ia + 1) % 3] + P[(ia + 2) % 3]) / 2; ln = float(np.linalg.norm(bm - tip))
         if not (3.5 < ln < 30 and ln / max(base_len, 1e-6) > 1.3): continue
         arrows.append(dict(tip=tip, u=(bm - tip) / ln, base=bm, length=ln, used=False))
     # --- paired arrows on a dimension line
-    dims = []
     cand = []
     for i, a in enumerate(arrows):
         for j in range(i + 1, len(arrows)):
             b = arrows[j]; v = b['tip'] - a['tip']; L = float(np.linalg.norm(v))
             if L < 2.0: continue
             d = v / L; ca = float(a['u'] @ d); cb = float(b['u'] @ d)
-            if abs(abs(ca) - 1) > 0.02 or abs(abs(cb) - 1) > 0.02 or ca * cb > 0: continue       # both along the line, one each way
-            if not any(on_line(sg, a['tip'], b['tip'], 0.6) or (_dist_pt_seg(a['base'], (sg[0], sg[1]), (sg[2], sg[3])) < 1.2 and abs((np.array([sg[2] - sg[0], sg[3] - sg[1]]) / (math.hypot(sg[2] - sg[0], sg[3] - sg[1]) + 1e-9)) @ d) > 0.99) for sg in segs):
-                continue
+            if abs(abs(ca) - 1) > 0.02 or abs(abs(cb) - 1) > 0.02 or ca * cb > 0: continue
+            if len(S):
+                m = on_line(a['tip'], b['tip'], 0.6)
+                if not m.any():
+                    ux = S[:, 2] - S[:, 0]; uy = S[:, 3] - S[:, 1]; ln = np.hypot(ux, uy) + 1e-9
+                    m = (np.abs((ux * d[0] + uy * d[1]) / ln) > 0.99) & (_pt_seg_dist(S[:, 0:2], a['base'], a['base']) < 1.5)
+                if not m.any(): continue
+            else: continue
             cand.append((L, i, j))
-    cand.sort()
-    pairs = []
+    cand.sort(); pairs = []
     for L, i, j in cand:
         if arrows[i]['used'] or arrows[j]['used']: continue
         arrows[i]['used'] = arrows[j]['used'] = True; pairs.append((i, j))
+    dims = []
     for i, j in pairs:
-        a, b = arrows[i], arrows[j]; d = (b['tip'] - a['tip']); L = float(np.linalg.norm(d)); d = d / L
+        a, b = arrows[i], arrows[j]; d = b['tip'] - a['tip']; L = float(np.linalg.norm(d)); d = d / L
         dm = Dimension(id='', kind='linear', text='', style='paired', tips=[[float(a['tip'][0]), float(a['tip'][1])], [float(b['tip'][0]), float(b['tip'][1])]])
-        n = np.array([-d[1], d[0]])
-        for k, sg in enumerate(segs):
-            if claimed[k]: continue
-            v = np.array([sg[2] - sg[0], sg[3] - sg[1]]); lv = float(np.linalg.norm(v))
-            if lv < 1e-6: continue
-            if on_line(sg, a['tip'], b['tip'], 0.6) or (abs(float((v / lv) @ d)) > 0.999 and _dist_pt_seg(a['base'], (sg[0], sg[1]), (sg[2], sg[3])) < 1.5) or (abs(float((v / lv) @ d)) > 0.999 and _dist_pt_seg(b['base'], (sg[0], sg[1]), (sg[2], sg[3])) < 1.5):
-                claimed[k] = True; continue
-            if abs(float((v / lv) @ d)) < 0.02:      # perpendicular to the dimension line: an extension line if it passes through a tip
-                for tip in (a['tip'], b['tip']):
-                    if _dist_pt_seg(tip, (sg[0], sg[1]), (sg[2], sg[3])) < 0.8:
-                        claimed[k] = True; far = (sg[0], sg[1]) if np.linalg.norm(np.array(sg[:2]) - tip) > np.linalg.norm(np.array(sg[2:4]) - tip) else (sg[2], sg[3]); near = (sg[2], sg[3]) if far == (sg[0], sg[1]) else (sg[0], sg[1])
-                        # the end beyond the tip is the "overshoot", the other end sits next to the feature
-                        dm.ext.append([float(far[0]), float(far[1]), float(near[0]), float(near[1])]) if np.linalg.norm(np.array(far) - tip) > np.linalg.norm(np.array(near) - tip) else None
-                        break
-        # extension lines were recorded as [feature_end, overshoot_end]: feature end is the one FARTHER from the tip along the line, overshoot is past the dimension line
-        dm._line = (a['tip'], b['tip']); dm._d = d; dm._len = L
-        dims.append(dm)
+        ux = S[:, 2] - S[:, 0]; uy = S[:, 3] - S[:, 1]; ln = np.hypot(ux, uy) + 1e-9; cosd = np.abs((ux * d[0] + uy * d[1]) / ln)
+        dimline = (~claimed) & (on_line(a['tip'], b['tip'], 0.6) | ((cosd > 0.999) & ((_pt_seg_dist(S[:, 0:2], a['base'], a['base']) < 1.5) | (_pt_seg_dist(S[:, 2:4], a['base'], a['base']) < 1.5) | (_pt_seg_dist(S[:, 0:2], b['base'], b['base']) < 1.5) | (_pt_seg_dist(S[:, 2:4], b['base'], b['base']) < 1.5))))
+        claimed |= dimline
+        for tip in (a['tip'], b['tip']):             # extension lines: perpendicular to the dimension line and through a tip
+            e = np.where((~claimed) & (cosd < 0.02) & (_pt_seg_dist(np.array([tip]), (0, 0), (0, 0))[0] >= 0))[0]
+            if not len(e): continue
+            dd = np.array([_pt_seg_dist(np.array([tip]), S[k, 0:2], S[k, 2:4])[0] for k in e]); hit = e[dd < 0.8]
+            for k in hit[:1]:
+                claimed[k] = True; p0 = S[k, 0:2]; p1 = S[k, 2:4]
+                far, near = (p0, p1) if np.linalg.norm(p0 - tip) > np.linalg.norm(p1 - tip) else (p1, p0)
+                dm.ext.append([float(far[0]), float(far[1]), float(near[0]), float(near[1])])
+        dm._line = (a['tip'], b['tip']); dims.append(dm)
     # --- leaders (single arrows)
     for a in arrows:
         if a['used']: continue
         a['used'] = True
         dm = Dimension(id='', kind='linear', text='', style='leader', tips=[[float(a['tip'][0]), float(a['tip'][1])]])
         end = None
-        for k, sg in enumerate(segs):
-            if claimed[k]: continue
-            for p, q in (((sg[0], sg[1]), (sg[2], sg[3])), ((sg[2], sg[3]), (sg[0], sg[1]))):
-                if np.linalg.norm(np.array(p) - a['base']) < 1.5:
-                    v = np.array(q) - np.array(p); lv = np.linalg.norm(v)
-                    if lv > 1e-6 and float((v / lv) @ a['u']) > 0.98: claimed[k] = True; end = np.array(q); break
-            if end is not None: break
+        if len(S):
+            ux = S[:, 2] - S[:, 0]; uy = S[:, 3] - S[:, 1]; ln = np.hypot(ux, uy) + 1e-9
+            for k in np.where(~claimed)[0]:
+                for p, q in ((S[k, 0:2], S[k, 2:4]), (S[k, 2:4], S[k, 0:2])):
+                    if np.linalg.norm(p - a['base']) < 1.5 and float(((q - p) / (np.linalg.norm(q - p) + 1e-9)) @ a['u']) > 0.98: claimed[k] = True; end = q; break
+                if end is not None: break
         shoulder = end
-        if end is not None:                       # a horizontal shoulder after the elbow
-            for k, sg in enumerate(segs):
-                if claimed[k]: continue
-                for p, q in (((sg[0], sg[1]), (sg[2], sg[3])), ((sg[2], sg[3]), (sg[0], sg[1]))):
-                    if np.linalg.norm(np.array(p) - end) < 1.5 and abs(q[1] - p[1]) < 0.5: claimed[k] = True; shoulder = np.array(q); break
+        if end is not None and len(S):
+            for k in np.where(~claimed)[0]:
+                for p, q in ((S[k, 0:2], S[k, 2:4]), (S[k, 2:4], S[k, 0:2])):
+                    if np.linalg.norm(p - end) < 1.5 and abs(q[1] - p[1]) < 0.5: claimed[k] = True; shoulder = q; break
         dm._anchor = shoulder if shoulder is not None else a['tip']; dm._line = None
         dims.append(dm)
     # --- text association and parsing
     free = [r for r in runs if not r.used]
     def near_runs(dm):
         if dm.style == 'paired':
-            a, b = dm._line; ref = lambda r: _dist_pt_seg(((r.bbox[0] + r.bbox[2]) / 2, (r.bbox[1] + r.bbox[3]) / 2), a, b)
+            a, b = dm._line; ref = lambda r: float(_pt_seg_dist(np.array([[(r.bbox[0] + r.bbox[2]) / 2, (r.bbox[1] + r.bbox[3]) / 2]]), a, b)[0])
         else:
             ref = lambda r: _bbox_gap([dm._anchor[0], dm._anchor[1], dm._anchor[0], dm._anchor[1]], r.bbox)
         return sorted((r for r in free if not r.used), key=ref), ref
     for dm in dims:
         rs, ref = near_runs(dm)
         main = None; stack = []
-        # limit dimensions: two plain numbers of the same size, one above the other, no nominal value
-        nums = [r for r in rs if ref(r) <= 3.2 * r.size and _num(r.text) and not _num(r.text)[1] and r.rot in (0, 90)]
+        for r in rs:                                 # a fractional dimension first: its numerator and denominator would otherwise read as a limits pair
+            if ref(r) > (3.2 * r.size if dm.style == 'paired' else 2.0 * r.size + 6): break
+            if parse_dim_text(r.text) and _read_fraction(r, free)[0] is not None: main = r; break
+        nums = [r for r in rs if main is None and ref(r) <= 3.2 * r.size and _num(r.text) and not _num(r.text)[1] and r.rot in (0, 90)]
         for r in nums:
             for q in nums:
                 if r is not q and abs(r.size - q.size) < 0.2 and (abs(r.bbox[0] - q.bbox[0]) < 2 * r.size if r.rot == 0 else abs(r.bbox[1] - q.bbox[1]) < 2 * r.size) and (0.3 * r.size < abs(r.oy - q.oy) < 2.6 * r.size if r.rot == 0 else 0.3 * r.size < abs(r.ox - q.ox) < 2.6 * r.size):
                     stack = [r, q]; break
             if stack: break
-        if not stack:
+        if not stack and main is None:
             for r in rs:
                 if ref(r) > (3.2 * r.size if dm.style == 'paired' else 2.0 * r.size + 6): break
                 if parse_dim_text(r.text): main = r; break
         if main is None:
             if stack:
                 hi, lo = (stack if (stack[0].oy > stack[1].oy if stack[0].rot == 0 else stack[0].ox < stack[1].ox) else stack[::-1])
+                if hi.text.strip().isdigit() and lo.text.strip().isdigit() and int(hi.text) < int(lo.text) and int(lo.text) in (2, 4, 8, 16, 32, 64):     # 3 over 4 is three quarters, not limits (limits run high over low)
+                    dm.value = int(hi.text) / int(lo.text); dm.text = f'{hi.text}/{lo.text}'; dm.text_pos = [hi.ox, hi.oy]; dm.text_rot = hi.rot; hi.used = lo.used = True; dm.unit = 'inch'
+                    dm.tol = Tol('none'); mk = [r for r in free if not r.used and r.text.strip() in ('"', '\u201d', '\u2033') and abs(r.oy - hi.oy) < 4 * hi.size + 20 and abs(r.ox - hi.ox) < 6 * hi.size]
+                    if mk: mk[0].used = True; dm.text += '"'
+                    continue
                 dm.tol = Tol('limits', _num(hi.text)[0], _num(lo.text)[0]); dm.value = round((dm.tol.upper + dm.tol.lower) / 2, 6); dm.text = f'{hi.text} / {lo.text}'
                 dm.text_pos = [hi.ox, hi.oy]; dm.text_rot = hi.rot; hi.used = lo.used = True
                 continue
-            dm.conf = 'partial'; dm.style = dm.style or 'text-only'; continue
+            dm.conf = 'partial'; continue
         p = parse_dim_text(main.text); main.used = True
         dm.kind, dm.value, dm.count, dm.suffix = p['kind'], p['value'], p['count'], p['suffix']; dm.text = main.text; dm.text_pos = [main.ox, main.oy]; dm.text_rot = main.rot
         dm.tol = Tol('reference') if p['reference'] else Tol('basic') if p['basic'] else Tol('none')
         if p['tol']: dm.tol = Tol('bilateral', p['tol'][0], p['tol'][1])
-        # basic dimension: the text sits in a box
-        for k, b in enumerate(geo.boxes):
+        for k, b in enumerate(rects):
             if k not in boxes_used and b not in border and _inside(main.bbox, b, 2.5) and not _inside(b, main.bbox, 0) and (b[2] - b[0]) < 6 * main.size:
                 dm.tol = Tol('basic'); claim_box(b)
-        # stacked tolerance values next to the main text: smaller type, beside it, one above the other
+        # whole number + stacked fraction, and the inch mark
+        frac, used = _read_fraction(main, free); parts = [main] + list(used)
+        if frac is not None:
+            dm.value = (dm.value or 0.0) + frac; dm.text += ' ' + '/'.join(r.text for r in used)
+            for r in used: r.used = True
+            dm.unit = 'inch'
+        for r in free:
+            if not r.used and r.text.strip() in ('"', '”', '″') and abs(r.ox - main.bbox[2]) < 4 * main.size + (30 if frac else 0) and abs(r.oy - main.oy) < 2.5 * main.size:
+                r.used = True; dm.unit = 'inch'; dm.text += '"'; parts.append(r); break
+        # parentheses are drawn as filled shapes: two tall thin ones flanking the whole dimension text mark a reference dimension
+        ext = parts
+        ub = [_tf(main, bx, by) for r in ext for bx, by in ((r.bbox[0], r.bbox[1]), (r.bbox[2], r.bbox[3]))]
+        u0 = min(u for u, v in ub); u1 = max(u for u, v in ub); vmid = sum(v for u, v in ub) / len(ub); left = right = False
+        for g in geo.glyphs:
+            gu0, gv0 = _tf(main, g[0], g[1]); gu1, gv1 = _tf(main, g[2], g[3]); gl, gh = min(gu0, gu1), max(gu0, gu1); gvl, gvh = min(gv0, gv1), max(gv0, gv1)
+            if (gvh - gvl) > 1.4 * (gh - gl) and (gvh - gvl) > 0.8 * main.size and gvl - 0.8 * main.size < vmid < gvh + 0.8 * main.size:
+                if u0 - 2.5 * main.size < gh <= u0 + 0.5 * main.size: left = True
+                if u1 - 0.5 * main.size <= gl < u1 + 2.5 * main.size: right = True
+        if left and right and dm.tol.kind == 'none': dm.tol = Tol('reference')
+        # descriptive text beside the value (TOTAL HEIGHT)
+        for r in rs:
+            if not r.used and ref(r) < 2.8 * main.size and re.fullmatch(r'[A-Za-z][A-Za-z \-/]{2,30}', r.text.strip()) and r.rot == main.rot and not VIEW_LABEL.match(r.text.strip()):
+                dm.label = r.text.strip(); r.used = True; break
         def beside(r):
             if r.used or r.size > 0.95 * main.size or not _num(r.text): return False
             if main.rot == 0: return -0.2 * main.size < r.ox - main.bbox[2] < 2.5 * main.size and abs(r.oy - main.oy) < 2.2 * main.size
             return -0.2 * main.size < r.oy - main.bbox[3] < 2.5 * main.size and abs(r.ox - main.ox) < 2.6 * main.size
         tolruns = [r for r in free if beside(r)]
-        if tolruns and not p['tol']:
-            key = (lambda r: -r.oy) if main.rot == 0 else (lambda r: r.ox)        # "above" first
-            tolruns.sort(key=key); vals = []
+        if tolruns and not p['tol'] and frac is None:
+            tolruns.sort(key=(lambda r: -r.oy) if main.rot == 0 else (lambda r: r.ox)); vals = []
             for r in tolruns[:2]:
                 n = _num(r.text); r.used = True; vals.append(n[0]); dm.text += ' ' + r.text
             if len(vals) == 2: dm.tol = Tol('bilateral', vals[0], vals[1])
             elif len(vals) == 1: dm.tol = Tol('bilateral', vals[0], None)
-    # --- measure from the drawn geometry
-    for dm in dims:
-        dm.unit = sh.unit
-        if sh.scale is None or dm.value is None: continue
-        if dm.style == 'paired' and dm.kind in ('linear', 'diameter'):
-            L = float(np.linalg.norm(np.array(dm.tips[0]) - np.array(dm.tips[1]))); dm.drawn = round(L * mmpp / sh.scale, 4)
-        elif dm.tips and dm.kind in ('diameter', 'radius'):
+    # leaders and pairs that never found a value are not dimensions (balloon leaders, notes with arrows): keep only paired ones that have extension lines
+    dims = [d for d in dims if (d.conf == 'ok' and (d.style != 'paired' or d.ext)) or (d.style == 'paired' and len(d.ext) == 2)]
+    # --- unit: inch marks on the dimensions decide it for the sheet
+    inch = sum(1 for d in dims if d.unit == 'inch'); metric = sum(1 for d in dims if d.unit != 'inch' and d.value is not None)
+    if inch and inch >= metric: sh.unit = 'inch'; sh.unit_assumed = False
+    for d in dims: d.unit = sh.unit
+    unit_per_pt = (1 / 72.0) if sh.unit == 'inch' else mmpp
+    # --- measure from the drawn geometry (length in drawing units; the scale converts it to real size)
+    def paper_len(dm):
+        if dm.style == 'paired' and dm.kind in ('linear', 'diameter'): return float(np.linalg.norm(np.array(dm.tips[0]) - np.array(dm.tips[1])))
+        if dm.tips and dm.kind in ('diameter', 'radius'):
             best = None
             for cx, cy, r, bb in geo.arcs:
                 e = abs(math.hypot(dm.tips[0][0] - cx, dm.tips[0][1] - cy) - r)
                 if e < 0.6 and (best is None or e < best[0]): best = (e, cx, cy, r)
             if best:
-                dm.arc = [best[1], best[2], best[3]]; dm.drawn = round((2 * best[3] if dm.kind == 'diameter' else best[3]) * mmpp / sh.scale, 4)
-        if dm.drawn is not None: dm.drawn_dev = round(dm.drawn - dm.value, 4)
-    # --- views: object linework not used by dimensions, datums, frames or the title block, clustered by proximity
-    obj = [[min(sg[0], sg[2]), min(sg[1], sg[3]), max(sg[0], sg[2]), max(sg[1], sg[3])] for k, sg in enumerate(segs) if not claimed[k]]
+                dm.arc = [best[1], best[2], best[3]]; return 2 * best[3] if dm.kind == 'diameter' else best[3]
+        return None
+    plen = {d.id or id(d): paper_len(d) for d in dims}
+    if sh.scale is None:                           # no scale text: infer it from the dimensions when they agree with each other
+        ratios = [plen[d.id or id(d)] * unit_per_pt / d.value for d in dims if plen[d.id or id(d)] and d.value and d.tol.kind != 'reference']
+        if len(ratios) >= 2:
+            med = float(np.median(ratios)); agree = sum(1 for r in ratios if abs(r / med - 1) < 0.02)
+            if agree >= max(2, 0.6 * len(ratios)): sh.scale = med; sh.scale_text = 'inferred'; sh.warnings.append(f'scale inferred from {agree} of {len(ratios)} dimensions (no scale text on the sheet)')
+    if sh.scale is None: sh.warnings.append('no sheet scale: drawn values are not computed')
+    for dm in dims:
+        L = plen[dm.id or id(dm)]
+        if sh.scale and L and dm.value is not None:
+            dm.drawn = round(L * unit_per_pt / sh.scale, 4); dm.drawn_dev = round(dm.drawn - dm.value, 4)
+    # --- views: object linework not used by dimensions, datums, frames or the title block, clustered by proximity (grid hashing)
+    obj = [list(b) for b in sb[~claimed]] if len(S) else []
     obj += [list(a[3]) for a in geo.arcs if not in_tb(a[3])]
-    obj = [b for b in obj if not any(b == c for c in border)]
-    gap = 0.015 * W
-    parent = list(range(len(obj)))
-    def find(i):
-        while parent[i] != i: parent[i] = parent[parent[i]]; i = parent[i]
-        return i
-    for i in range(len(obj)):
-        for j in range(i + 1, len(obj)):
-            if _bbox_gap(obj[i], obj[j]) <= gap: parent[find(i)] = find(j)
+    obj = [b for b in obj if not any(all(abs(x - y) < 0.5 for x, y in zip(b, c)) for c in border)]
+    gap = 0.015 * W; cell = gap / 2
     cl = {}
-    for i, b in enumerate(obj): cl.setdefault(find(i), []).append(b)
+    if obj:
+        from scipy import ndimage
+        nx, ny = int(W // cell) + 3, int(H // cell) + 3; mask = np.zeros((nx, ny), bool)
+        ob = np.array(obj, float)
+        ix0 = np.clip((ob[:, 0] // cell).astype(int), 0, nx - 1); ix1 = np.clip((ob[:, 2] // cell).astype(int), 0, nx - 1)
+        iy0 = np.clip((ob[:, 1] // cell).astype(int), 0, ny - 1); iy1 = np.clip((ob[:, 3] // cell).astype(int), 0, ny - 1)
+        for a0, a1, b0, b1 in zip(ix0, ix1, iy0, iy1): mask[a0:a1 + 1, b0:b1 + 1] = True
+        lab, _ = ndimage.label(ndimage.binary_dilation(mask, iterations=1), structure=np.ones((3, 3)))
+        for i, b in enumerate(obj): cl.setdefault(int(lab[ix0[i], iy0[i]]), []).append(b)
     views = []
     for members in cl.values():
         if len(members) < 3: continue
         bb = [min(b[0] for b in members), min(b[1] for b in members), max(b[2] for b in members), max(b[3] for b in members)]
         if (bb[2] - bb[0]) < 0.02 * W and (bb[3] - bb[1]) < 0.02 * W: continue
-        # a table (BOM, revision block): ruled lines only, with many text runs inside
-        if len(members) >= 4 and sum(1 for r in runs if _inside(r.bbox, bb, 1.0)) >= 6 and all((b[2] - b[0]) < 0.5 or (b[3] - b[1]) < 0.5 for b in members): continue
+        if len(members) >= 4 and sum(1 for r in runs if _inside(r.bbox, bb, 1.0)) >= 6 and all((b[2] - b[0]) < 0.5 or (b[3] - b[1]) < 0.5 for b in members): continue     # a table
         views.append(View(id='', bbox=[round(x, 2) for x in bb], n_segments=len(members), scale=sh.scale))
     views.sort(key=lambda v: (-v.bbox[3], v.bbox[0]))
     for i, v in enumerate(views, 1): v.id = f'V{i}'
@@ -454,17 +565,15 @@ def _read_sheet(sh, runs, geo):
         if best and best[0] < 0.2 * W: dm.view = best[1].id
     dims.sort(key=lambda d: (d.view or 'ZZ', -(d.text_pos[1] if d.text_pos else 0), d.text_pos[0] if d.text_pos else 0))
     for i, dm in enumerate(dims, 1): dm.id = f'D{i}'
-    for k in ('_line', '_d', '_len', '_anchor'):
-        for dm in dims:
+    for dm in dims:
+        for k in ('_line', '_anchor'):
             if hasattr(dm, k): delattr(dm, k)
     sh.dimensions = dims; sh.views = views
     for i, d in enumerate(sorted(datums, key=lambda d: (-d.pos[1], d.pos[0])), 1): d.id = f'T{i}'; sh.datums.append(d)
     for i, f in enumerate(sorted(frames, key=lambda f: (-f.pos[3], f.pos[0])), 1):
-        f.id = f'G{i}'
-        best = None
+        f.id = f'G{i}'; best = None
         for dm in dims:
-            anchors = ([dm.text_pos] if dm.text_pos else []) + [list(t) for t in dm.tips]
-            for p in anchors:
+            for p in ([dm.text_pos] if dm.text_pos else []) + [list(t) for t in dm.tips]:
                 g = _bbox_gap([p[0], p[1], p[0], p[1]], f.pos)
                 if best is None or g < best[0]: best = (g, dm.id)
         if best and best[0] < 0.1 * W: f.attached_to = best[1]

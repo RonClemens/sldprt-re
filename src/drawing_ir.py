@@ -31,6 +31,7 @@ class Dimension:
     tol: Tol = field(default_factory=Tol)
     count: Optional[int] = None                # "2X", "4 PLCS"
     suffix: list = field(default_factory=list) # words such as THRU, TYP
+    label: Optional[str] = None                # descriptive text next to the value (TOTAL HEIGHT)
     view: Optional[str] = None                 # View.id it belongs to
     text_pos: Optional[list] = None            # [x, y] of the main text's origin
     text_rot: int = 0                          # 0 or 90
