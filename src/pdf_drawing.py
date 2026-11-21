@@ -268,8 +268,9 @@ def _read_fraction(main, free):
     return None, []
 
 
-def _read_sheet(sh, runs, geo):
-    W, H = sh.size_pt
+def _read_sheet(sh, runs, geo, tol=1.0):
+    """tol: geometric tolerance multiplier (1.0 for vector input; a scan's lines are a few pixels off)."""
+    W, H = sh.size_pt; T = tol
     mmpp = MM_PER_PT
     # --- scale
     for r in runs:
@@ -299,7 +300,7 @@ def _read_sheet(sh, runs, geo):
         keep = ~((sb[:, 0] >= tb[0] - 1) & (sb[:, 1] >= tb[1] - 1) & (sb[:, 2] <= tb[2] + 1) & (sb[:, 3] <= tb[3] + 1))
         S, sb = S[keep], sb[keep]
     claimed = np.zeros(len(S), bool)
-    def on_line(a, b, tol=0.6): return (_pt_seg_dist(S[:, 0:2], a, b) < tol) & (_pt_seg_dist(S[:, 2:4], a, b) < tol) if len(S) else np.zeros(0, bool)
+    def on_line(a, b, tol=0.6): return (_pt_seg_dist(S[:, 0:2], a, b) < tol * T) & (_pt_seg_dist(S[:, 2:4], a, b) < tol * T) if len(S) else np.zeros(0, bool)
     def claim_box(b):
         for p, q in (((b[0], b[1]), (b[2], b[1])), ((b[0], b[3]), (b[2], b[3])), ((b[0], b[1]), (b[0], b[3])), ((b[2], b[1]), (b[2], b[3]))): claimed[on_line(p, q)] = True
     for b in border: claim_box(b)                  # the sheet border is not object linework
@@ -368,7 +369,7 @@ def _read_sheet(sh, runs, geo):
                 m = on_line(a['tip'], b['tip'], 0.6)
                 if not m.any():
                     ux = S[:, 2] - S[:, 0]; uy = S[:, 3] - S[:, 1]; ln = np.hypot(ux, uy) + 1e-9
-                    m = (np.abs((ux * d[0] + uy * d[1]) / ln) > 0.99) & (_pt_seg_dist(S[:, 0:2], a['base'], a['base']) < 1.5)
+                    m = (np.abs((ux * d[0] + uy * d[1]) / ln) > 0.99) & (_pt_seg_dist(S[:, 0:2], a['base'], a['base']) < 1.5 * T)
                 if not m.any(): continue
             else: continue
             cand.append((L, i, j))
@@ -381,12 +382,12 @@ def _read_sheet(sh, runs, geo):
         a, b = arrows[i], arrows[j]; d = b['tip'] - a['tip']; L = float(np.linalg.norm(d)); d = d / L
         dm = Dimension(id='', kind='linear', text='', style='paired', tips=[[float(a['tip'][0]), float(a['tip'][1])], [float(b['tip'][0]), float(b['tip'][1])]])
         ux = S[:, 2] - S[:, 0]; uy = S[:, 3] - S[:, 1]; ln = np.hypot(ux, uy) + 1e-9; cosd = np.abs((ux * d[0] + uy * d[1]) / ln)
-        dimline = (~claimed) & (on_line(a['tip'], b['tip'], 0.6) | ((cosd > 0.999) & ((_pt_seg_dist(S[:, 0:2], a['base'], a['base']) < 1.5) | (_pt_seg_dist(S[:, 2:4], a['base'], a['base']) < 1.5) | (_pt_seg_dist(S[:, 0:2], b['base'], b['base']) < 1.5) | (_pt_seg_dist(S[:, 2:4], b['base'], b['base']) < 1.5))))
+        dimline = (~claimed) & (on_line(a['tip'], b['tip'], 0.6) | ((cosd > 0.999) & ((_pt_seg_dist(S[:, 0:2], a['base'], a['base']) < 1.5 * T) | (_pt_seg_dist(S[:, 2:4], a['base'], a['base']) < 1.5 * T) | (_pt_seg_dist(S[:, 0:2], b['base'], b['base']) < 1.5 * T) | (_pt_seg_dist(S[:, 2:4], b['base'], b['base']) < 1.5 * T))))
         claimed |= dimline
         for tip in (a['tip'], b['tip']):             # extension lines: perpendicular to the dimension line and through a tip
             e = np.where((~claimed) & (cosd < 0.02) & (_pt_seg_dist(np.array([tip]), (0, 0), (0, 0))[0] >= 0))[0]
             if not len(e): continue
-            dd = np.array([_pt_seg_dist(np.array([tip]), S[k, 0:2], S[k, 2:4])[0] for k in e]); hit = e[dd < 0.8]
+            dd = np.array([_pt_seg_dist(np.array([tip]), S[k, 0:2], S[k, 2:4])[0] for k in e]); hit = e[dd < 0.8 * T]
             for k in hit[:1]:
                 claimed[k] = True; p0 = S[k, 0:2]; p1 = S[k, 2:4]
                 far, near = (p0, p1) if np.linalg.norm(p0 - tip) > np.linalg.norm(p1 - tip) else (p1, p0)
@@ -402,13 +403,13 @@ def _read_sheet(sh, runs, geo):
             ux = S[:, 2] - S[:, 0]; uy = S[:, 3] - S[:, 1]; ln = np.hypot(ux, uy) + 1e-9
             for k in np.where(~claimed)[0]:
                 for p, q in ((S[k, 0:2], S[k, 2:4]), (S[k, 2:4], S[k, 0:2])):
-                    if np.linalg.norm(p - a['base']) < 1.5 and float(((q - p) / (np.linalg.norm(q - p) + 1e-9)) @ a['u']) > 0.98: claimed[k] = True; end = q; break
+                    if np.linalg.norm(p - a['base']) < 1.5 * T and float(((q - p) / (np.linalg.norm(q - p) + 1e-9)) @ a['u']) > 0.98: claimed[k] = True; end = q; break
                 if end is not None: break
         shoulder = end
         if end is not None and len(S):
             for k in np.where(~claimed)[0]:
                 for p, q in ((S[k, 0:2], S[k, 2:4]), (S[k, 2:4], S[k, 0:2])):
-                    if np.linalg.norm(p - end) < 1.5 and abs(q[1] - p[1]) < 0.5: claimed[k] = True; shoulder = q; break
+                    if np.linalg.norm(p - end) < 1.5 * T and abs(q[1] - p[1]) < 0.5 * T: claimed[k] = True; shoulder = q; break
         dm._anchor = shoulder if shoulder is not None else a['tip']; dm._line = None
         dims.append(dm)
     # --- text association and parsing
@@ -502,7 +503,7 @@ def _read_sheet(sh, runs, geo):
             best = None
             for cx, cy, r, bb in geo.arcs:
                 e = abs(math.hypot(dm.tips[0][0] - cx, dm.tips[0][1] - cy) - r)
-                if e < 0.6 and (best is None or e < best[0]): best = (e, cx, cy, r)
+                if e < 0.6 * T and (best is None or e < best[0]): best = (e, cx, cy, r)
             if best:
                 dm.arc = [best[1], best[2], best[3]]; return 2 * best[3] if dm.kind == 'diameter' else best[3]
         return None
