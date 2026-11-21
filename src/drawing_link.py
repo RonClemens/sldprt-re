@@ -36,6 +36,7 @@ def load_glb_world(path):
         n = nodes[i]; M = M @ mat(n)
         if 'mesh' in n:
             for pr in js['meshes'][n['mesh']]['primitives']:
+                if pr.get('mode', 4) != 4: continue                     # triangles only (an annotated glTF also holds dimension lines)
                 P = acc(pr['attributes']['POSITION']).astype(float); P = P @ M[:3, :3].T + M[:3, 3]
                 F = acc(pr['indices']).astype(np.int64).reshape(-1, 3) if 'indices' in pr else np.arange(len(P)).reshape(-1, 3)
                 Vs.append(P); Fs.append(F + base); base += len(P)
@@ -162,6 +163,8 @@ def link_sheet(sheet, glb_path, snap_mm=1.5):
         R, s, t = reg['R'], reg['s'], reg['t']
         vinfo = dict(id=v.id, orientation=[[int(x) for x in row] for row in R], score_pt=round(reg['score'], 3), scale_pt_per_mm=round(s / MM_PER_M, 5), ambiguous=reg['ambiguous'], dims=[d.id for d in dims])
         results['views'].append(vinfo)
+        wface = float((V @ R[2]).max()) + 0.002                       # the plane just in front of the model, as seen in this view
+        def to_model(u, vv): return (u * R[0] + vv * R[1] + wface * R[2])
         allv = np.vstack([feat['vertices'], feat['sil_vertices'][int(np.argmax(np.abs(R[2])))]])      # true vertices only: sampled edge points would make every coordinate look like a feature
         U = allv @ R[0]; Vv = allv @ R[1]; strong = {0: _clusters(U), 1: _clusters(Vv)}; major = {0: _clusters(U, min_count=12), 1: _clusters(Vv, min_count=12)}; used = {0: set(), 1: set()}
         for d in dims:
@@ -169,6 +172,9 @@ def link_sheet(sheet, glb_path, snap_mm=1.5):
             axis = 0 if abs(dv[0]) > 0.99 * ln else 1 if abs(dv[1]) > 0.99 * ln else None
             if axis is None: rec.update(status='unlinked', why='not along a view axis'); results['dimensions'].append(rec); continue
             ca = (a[axis] - t[axis]) / s; cb = (b[axis] - t[axis]) / s; S_ = strong[axis]; tol_m = snap_mm / MM_PER_M
+            oc = (a[1 - axis] - t[1 - axis]) / s                                   # the dimension line's position across the view
+            def line3(c0, c1): return [[round(float(x), 6) for x in (to_model(c0, oc) if axis == 0 else to_model(oc, c0))], [round(float(x), 6) for x in (to_model(c1, oc) if axis == 0 else to_model(oc, c1))]]
+            rec['line_m'] = line3(ca, cb)
             if len(S_) == 0: rec.update(status='unlinked', why='no model features'); results['dimensions'].append(rec); continue
             sa = S_[np.argmin(np.abs(S_ - ca))]; sb = S_[np.argmin(np.abs(S_ - cb))]
             rec['anchor_error_mm'] = [round(abs(sa - ca) * MM_PER_M, 3), round(abs(sb - cb) * MM_PER_M, 3)]
@@ -176,7 +182,7 @@ def link_sheet(sheet, glb_path, snap_mm=1.5):
                 far = max(abs(sa - ca), abs(sb - cb)) * MM_PER_M
                 rec.update(status='unlinked', why='an anchor has no model feature within %.1f mm (nearest is %.2f mm = %.4g %s away)' % (snap_mm, far, far / uconv, sheet.unit)); results['dimensions'].append(rec); continue
             meas_mm = abs(sb - sa) * MM_PER_M; meas = meas_mm / uconv; dev = meas - d.value
-            used[axis].update([float(sa), float(sb)])
+            used[axis].update([float(sa), float(sb)]); rec['line_m'] = line3(float(sa), float(sb))
             rec.update(measured=round(meas, 5), deviation=round(dev, 5), deviation_mm=round(dev * uconv, 3), model_axis=[int(x) for x in R[axis]], model_range_mm=[round(float(min(sa, sb)) * MM_PER_M, 3), round(float(max(sa, sb)) * MM_PER_M, 3)])
             if d.tol.kind == 'reference': rec['status'] = 'reference'
             elif d.tol.kind == 'bilateral' and d.tol.lower is not None: rec['status'] = 'pass' if d.tol.lower - 1e-9 <= dev <= d.tol.upper + 1e-9 else 'fail'
@@ -214,7 +220,10 @@ def main():
     if len(args) < 3: raise SystemExit(__doc__)
     sheet = read_pdf(args[0], pages=[int(args[1])], keep_lines=True).sheets[0]; res = link_sheet(sheet, args[2])
     if '--png' in sys.argv: render_png(sheet, args[2], res, sys.argv[sys.argv.index('--png') + 1])
-    if '--json' in sys.argv: print(json.dumps(res, indent=1)); return
+    if '--glb' in sys.argv:
+        from drawing_gltf import annotate_glb
+        annotate_glb(args[2], res, sys.argv[sys.argv.index('--glb') + 1], source=os.path.basename(args[0]) + ' page ' + args[1])
+    if '--json' in sys.argv: print(json.dumps(res, indent=1, default=float)); return
     print('model bbox (mm):', res['model']['bbox_mm'], 'triangles', res['model']['triangles'], '| general tolerance', res['general_tolerance'])
     for v in res['views']: print('view', v)
     for r in res['dimensions']:

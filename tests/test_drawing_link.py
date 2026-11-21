@@ -40,6 +40,13 @@ def main():
     d8 = find('(100)'); assert d8['status'] == 'reference' and abs(d8['measured'] - 100.0) < 0.05, d8
     for r in res['dimensions']: assert r['status'] != 'fail', r                     # nothing in the plate drawing contradicts the box
     unl = [r for r in res['dimensions'] if r['status'] == 'unlinked']; assert len(unl) >= 2, res['dimensions']     # the hole-related dimensions have no feature in a plain box
+    # annotated glTF: the CAD geometry is untouched, every linked dimension becomes a line node with its numbers, and the file loads back
+    from drawing_gltf import annotate_glb
+    out = os.path.join(tmp, 'annotated.glb'); annotate_glb(glb, res, out, source='test'); V2, F2 = L.load_glb_world(out); assert V2.shape == V.shape and F2.shape == F.shape
+    js = json.loads(open(out, 'rb').read()[20:20 + struct.unpack_from('<I', open(out, 'rb').read(), 12)[0]])
+    dim_nodes = [n for n in js['nodes'] if n.get('name', '').startswith('DIM ')]; assert len(dim_nodes) == sum(1 for r in res['dimensions'] if r.get('line_m')) >= 4
+    assert all(js['meshes'][n['mesh']]['primitives'][0]['mode'] == 1 for n in dim_nodes) and all('status' in n['extras'] for n in dim_nodes)
+    assert js['scenes'][0]['extras']['drawing_link']['counts'].get('pass', 0) >= 3 and 'KHR_materials_unlit' in js['extensionsUsed']
     print('OK: %d dimensions linked, %d unlinked (no model feature), none failed' % (sum(1 for r in res['dimensions'] if 'measured' in r), len(unl)))
 
 

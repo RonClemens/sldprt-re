@@ -71,6 +71,13 @@ Limits: linear dimensions along a view axis only (no angular, radial, diameter, 
 values are still reported for the best fit); the shift/scale search depends on the sheet scale, which is read from the sheet or inferred from the dimensions (both independent of the model); the model is the mesh
 from `sldasm2glb`, so a part that failed to tessellate looks like a missing feature. `tests/test_drawing_link.py` checks the method on the synthetic drawing against a plain box model: dimensions that the box can satisfy pass, those that refer to holes it lacks come back unlinked, none fail.
 
+### Annotated glTF (`src/drawing_gltf.py`)
+
+`python3 src/drawing_link.py DRAWING.pdf PAGE MODEL.glb --glb OUT.glb` writes the CAD mesh unchanged plus one `DIM <id>` node per linear dimension: a LINES primitive on the plane in front of the model in that dimension's view,
+green for pass, red for fail, orange for unlinked, grey for reference / no tolerance (KHR_materials_unlit). Each node's `extras` carries the text, printed and measured values, deviation, tolerance used, status and the reason when unlinked;
+the scene's `extras.drawing_link` carries the source, the general tolerance, the status counts and the per-view registration. Checked by loading the Hydro 27244607 result in Three.js in headless Chromium (8 triangle meshes, 6 dimension
+line nodes with extras). Not done: text labels in the 3D scene (glTF has no text; a viewer would draw them from `extras`), and a toggle for the layer in ipb_viz.
+
 ## Verification
 
 `tests/test_pdf_drawing.py` generates a synthetic drawing (`tools/make_test_drawing.py`, an invented 100 x 60 x 10 plate with a deliberately wrong dimension) and checks every
