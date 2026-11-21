@@ -78,6 +78,33 @@ green for pass, red for fail, orange for unlinked, grey for reference / no toler
 the scene's `extras.drawing_link` carries the source, the general tolerance, the status counts and the per-view registration. Checked by loading the Hydro 27244607 result in Three.js in headless Chromium (8 triangle meshes, 6 dimension
 line nodes with extras). Not done: text labels in the 3D scene (glTF has no text; a viewer would draw them from `extras`), and a toggle for the layer in ipb_viz.
 
+## Native `.SLDDRW`: what is decoded (`src/slddrw_dims.py`, `python3 src/slddrw_dims.py FILE.SLDDRW`)
+
+The package contains the native drawings. `Contents/Definition` (MFC archive; strings are `FF FE FF <len> UTF-16`, classes are tagged `FF FF <schema> <len> <name>` the first time they occur) holds every annotation as an object. A dimension
+between two model entities is a `moRefDim2E_c` named `RD<n>`: after the name come the double 2.0 and **the value SolidWorks itself measured, in metres**, then (a few kB on) the dimension's text as markup
+(`4<STACK size=1 divhratio=0.1 divwgap=1.0>21<OVER>32</STACK>" \r\nTOTAL HEIGHT`; a reference dimension is wrapped in `<Border type=14> ... </Border>`), and the components it spans as `<part>-<instance>` strings.
+Other classes seen in the stream: `moDisplayDistanceDim_c` (the drawn dimension), `moDimTolerance_c`, `moDimBackupDef_c`, `moCompEdge_c`, `moSimpleSurfIdRep_c` / `moSegmLeftTrimEdgeIdRep_c` (face and edge id-reps, as for mates),
+`moDisplayAngularDim_c` / `AngleDim_c`, `ParallelPlaneDistanceDim_c`, `sgBsOrdHDim`. `Contents/DisplayLists` holds the sheet's graphics with real coordinates (text objects carry their position in metres, a rotation angle in
+radians, the string and the font); it is a candidate for a native equivalent of the PDF reader's input, not yet decoded beyond the text.
+
+Cross-check on drawing 27244607 (the six dimensions of page 12), native value against the PDF reader and the model-based link:
+
+| dimension | printed (PDF) | SolidWorks native | model-based link |
+|---|---|---|---|
+| `(5 21/32")` reference | 5.6563 | 5.6604 | not linked |
+| `4 21/32"` TOTAL HEIGHT | 4.6563 | 4.6604 | 4.6602 |
+| `2 1/2"` (top view) | 2.5 | 2.5 | 2.4998 |
+| `3 1/2"` TOTAL WIDTH | 3.5 | 3.5 | 3.5 |
+| `2 1/2"` | 2.5 | 2.5 | 2.4998 |
+| `1 3/4"` | 1.75 | 1.75 | 1.75 |
+
+The five linkable dimensions agree with SolidWorks' own measurement to 0.0002 in, so the PDF reader plus the linker reproduce what SolidWorks measures. The printed fractions are SolidWorks' 1/32 in rounding of the measured value.
+The reference dimension: SolidWorks measured 143.774 mm; its stored anchor points have the same lower height (-0.09615 m) as the overall-height dimension but an upper height of +0.047624 m, exactly 1 in above the saved
+assembly's recorded top (+0.022225 m), on a component of the cylinder sub-assembly. So in the model state the drawing was made from, that component sits 1 in higher than in the saved assembly that the mesh was built from;
+why (a configuration or display state of the cylinder sub-assembly, or a stale recorded bounding box) is not established.
+
+Not decoded: which face or edge each dimension touches, the tolerance object, which view each dimension belongs to (they come out in file order), every dimension class other than `RD<n>`, and anything outside this one file.
+
 ## Verification
 
 `tests/test_pdf_drawing.py` generates a synthetic drawing (`tools/make_test_drawing.py`, an invented 100 x 60 x 10 plate with a deliberately wrong dimension) and checks every
