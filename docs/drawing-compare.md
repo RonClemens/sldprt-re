@@ -52,6 +52,25 @@ decent, recall is low. Known losses: small stacked tolerances, leader-style diam
 Every dimension from a raster carries `conf='ocr'` unless its drawn length agrees with its printed value. Not done: deskewing, handwriting, a repair step that uses the drawn length to choose
 between OCR readings (e.g. `81/2` as 8 1/2 or 40.5), page-level OCR when a vector page has an unusable font mapping.
 
+## Linking to the 3D model: proof of concept (`src/drawing_link.py`)
+
+`python3 src/drawing_link.py DRAWING.pdf PAGE MODEL.glb [--png OUT.png] [--json]`. For each orthographic view the model is projected in the 24 axis-aligned orientations and aligned to the drawn
+linework: the projected sharp and silhouette edges are matched to the drawn lines (distance map, shift found by cross-correlation, then refined) at the sheet scale, **without using the dimension text**.
+With the view registered, each linear dimension's two anchors (where its arrows touch) are mapped into model coordinates and snapped to the nearest *strong feature coordinate* (where several true model vertices
+coincide: a plane, an edge). The distance between the snapped features is the model's value; it is compared with the printed value against the dimension's own tolerance, or the title block's general
+tolerance (`FRACTION +-1/16`) when it has none: pass / fail / reference / no-tolerance / unlinked (with how far the nearest feature is). Per view it also counts major feature coordinates and how many carry a dimension.
+
+First result, real data (public Hydro package): drawing 27244607 (page 12 of `Full_TDP.pdf`, a SolidWorks assembly drawing in inches) against the assembly mesh converted from `27244607.SLDASM`:
+both views register (mean distance of projected edges to drawn lines 0.2-0.35 pt) and the five dimensions with model features pass, all within 0.0002 in except the overall height (printed `4 21/32"` = 4.6563, model 4.6602, within
+the 1/16 in general tolerance; the drawing's own geometry measures 4.6597, so the print is the 1/32-rounded form). The reference dimension `(5 21/32")` cannot be linked: one anchor lies exactly
+1.001 in (25.4 mm) beyond the nearest model feature. In the overlay the drawn rod below the block has no model edges. Not established: whether the drawing shows the cylinder's rod extended by its 1 in stroke (the part is `ADN-1"-1"`)
+while the mesh holds the default configuration, or the mesh is missing geometry (two small parts converted with one failed face each). The native `27244607.SLDDRW` is in the package, so the drawing's own configuration
+could be read once the native format is decoded.
+
+Limits: linear dimensions along a view axis only (no angular, radial, diameter, aligned or ordinate); orthographic views only; an orientation that is symmetric gives `ambiguous: true` (the measured
+values are still reported for the best fit); the shift/scale search depends on the sheet scale, which is read from the sheet or inferred from the dimensions (both independent of the model); the model is the mesh
+from `sldasm2glb`, so a part that failed to tessellate looks like a missing feature. `tests/test_drawing_link.py` checks the method on the synthetic drawing against a plain box model: dimensions that the box can satisfy pass, those that refer to holes it lacks come back unlinked, none fail.
+
 ## Verification
 
 `tests/test_pdf_drawing.py` generates a synthetic drawing (`tools/make_test_drawing.py`, an invented 100 x 60 x 10 plate with a deliberately wrong dimension) and checks every

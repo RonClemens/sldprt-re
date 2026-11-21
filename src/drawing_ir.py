@@ -51,6 +51,7 @@ class View:
     label: Optional[str] = None                # text found under or beside it (FRONT, SECTION A-A, ...)
     n_segments: int = 0
     scale: Optional[float] = None              # per-view scale when the label gives one, else the sheet scale
+    lines: Optional[list] = None               # object linework [[x0, y0, x1, y1], ...] inside the view, only when the reader was asked to keep it (keep_lines)
 
 
 @dataclass

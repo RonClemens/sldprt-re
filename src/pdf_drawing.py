@@ -202,7 +202,7 @@ def _num(s):
 
 
 # ----------------------------------------------------------------------------- the reader
-def read_pdf(path, pages=None):
+def read_pdf(path, pages=None, keep_lines=False):
     """pages: optional list of 1-based page numbers (a 150-page package is slow to read whole)."""
     from pdfminer.high_level import extract_pages
     drawing = Drawing('pdf-vector')
@@ -213,7 +213,7 @@ def read_pdf(path, pages=None):
         sheet = Sheet(index=pi, size_pt=[round(page.width, 2), round(page.height, 2)])
         runs = _runs_from_chars(chars)
         if not runs: sheet.warnings.append('no text on this page (raster or outlined text: needs OCR)')
-        _read_sheet(sheet, runs, geo)
+        _read_sheet(sheet, runs, geo, keep_lines=keep_lines)
         drawing.sheets.append(sheet)
     return drawing
 
@@ -268,7 +268,7 @@ def _read_fraction(main, free):
     return None, []
 
 
-def _read_sheet(sh, runs, geo, tol=1.0):
+def _read_sheet(sh, runs, geo, tol=1.0, keep_lines=False):
     """tol: geometric tolerance multiplier (1.0 for vector input; a scan's lines are a few pixels off)."""
     W, H = sh.size_pt; T = tol
     mmpp = MM_PER_PT
@@ -538,10 +538,15 @@ def _read_sheet(sh, runs, geo, tol=1.0):
         if len(members) < 3: continue
         bb = [min(b[0] for b in members), min(b[1] for b in members), max(b[2] for b in members), max(b[3] for b in members)]
         if (bb[2] - bb[0]) < 0.02 * W and (bb[3] - bb[1]) < 0.02 * W: continue
+        if max(bb[2] - bb[0], bb[3] - bb[1]) < 0.04 * W and len(members) < 8: continue          # a stray fragment (leftover arrowhead outlines, a tick), not a view
         if len(members) >= 4 and sum(1 for r in runs if _inside(r.bbox, bb, 1.0)) >= 6 and all((b[2] - b[0]) < 0.5 or (b[3] - b[1]) < 0.5 for b in members): continue     # a table
         views.append(View(id='', bbox=[round(x, 2) for x in bb], n_segments=len(members), scale=sh.scale))
     views.sort(key=lambda v: (-v.bbox[3], v.bbox[0]))
     for i, v in enumerate(views, 1): v.id = f'V{i}'
+    if keep_lines and len(S):
+        free = S[~claimed]; cx = (free[:, 0] + free[:, 2]) / 2; cy = (free[:, 1] + free[:, 3]) / 2
+        for v in views:
+            m = (cx >= v.bbox[0] - 1) & (cx <= v.bbox[2] + 1) & (cy >= v.bbox[1] - 1) & (cy <= v.bbox[3] + 1); v.lines = np.round(free[m, :4], 2).tolist()
     # --- notes, labels
     rest = [r for r in runs if not r.used]
     for v in views:
