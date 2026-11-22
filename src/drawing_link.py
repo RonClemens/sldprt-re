@@ -34,9 +34,9 @@ def load_glb_world(path):
     def walk(i, M):
         nonlocal base
         n = nodes[i]; M = M @ mat(n)
-        if 'mesh' in n:
+        if 'mesh' in n and not str(n.get('name', '')).startswith('DIM '):          # an annotated glTF also holds dimension nodes (lines and label triangles)
             for pr in js['meshes'][n['mesh']]['primitives']:
-                if pr.get('mode', 4) != 4: continue                     # triangles only (an annotated glTF also holds dimension lines)
+                if pr.get('mode', 4) != 4: continue
                 P = acc(pr['attributes']['POSITION']).astype(float); P = P @ M[:3, :3].T + M[:3, 3]
                 F = acc(pr['indices']).astype(np.int64).reshape(-1, 3) if 'indices' in pr else np.arange(len(P)).reshape(-1, 3)
                 Vs.append(P); Fs.append(F + base); base += len(P)
@@ -175,6 +175,14 @@ def link_sheet(sheet, glb_path, snap_mm=1.5):
             oc = (a[1 - axis] - t[1 - axis]) / s                                   # the dimension line's position across the view
             def line3(c0, c1): return [[round(float(x), 6) for x in (to_model(c0, oc) if axis == 0 else to_model(oc, c0))], [round(float(x), 6) for x in (to_model(c1, oc) if axis == 0 else to_model(oc, c1))]]
             rec['line_m'] = line3(ca, cb)
+            def anchor_vertex(c):
+                """a model vertex at coordinate c along the dimension's axis, as close as possible to the dimension line across the view and as far forward as possible: where an extension line starts"""
+                sel = np.abs(allv @ R[axis] - c) < 1e-4
+                if not sel.any(): return None
+                cand = allv[sel]; key = np.abs(cand @ R[1 - axis] - oc) - 1e-3 * (cand @ R[2])
+                return [round(float(x), 6) for x in cand[int(np.argmin(key))]]
+            ext_geom = lambda c0, c1: dict(axis=axis, basis=[[float(x) for x in row] for row in R], offset=float(oc), w=wface, c0=float(c0), c1=float(c1), extent=float((V.max(0) - V.min(0)).max()), ext=[anchor_vertex(float(c0)), anchor_vertex(float(c1))])
+            rec['geom'] = ext_geom(ca, cb)
             if len(S_) == 0: rec.update(status='unlinked', why='no model features'); results['dimensions'].append(rec); continue
             sa = S_[np.argmin(np.abs(S_ - ca))]; sb = S_[np.argmin(np.abs(S_ - cb))]
             rec['anchor_error_mm'] = [round(abs(sa - ca) * MM_PER_M, 3), round(abs(sb - cb) * MM_PER_M, 3)]
@@ -182,7 +190,7 @@ def link_sheet(sheet, glb_path, snap_mm=1.5):
                 far = max(abs(sa - ca), abs(sb - cb)) * MM_PER_M
                 rec.update(status='unlinked', why='an anchor has no model feature within %.1f mm (nearest is %.2f mm = %.4g %s away)' % (snap_mm, far, far / uconv, sheet.unit)); results['dimensions'].append(rec); continue
             meas_mm = abs(sb - sa) * MM_PER_M; meas = meas_mm / uconv; dev = meas - d.value
-            used[axis].update([float(sa), float(sb)]); rec['line_m'] = line3(float(sa), float(sb))
+            used[axis].update([float(sa), float(sb)]); rec['line_m'] = line3(float(sa), float(sb)); rec['geom'] = ext_geom(sa, sb)
             rec.update(measured=round(meas, 5), deviation=round(dev, 5), deviation_mm=round(dev * uconv, 3), model_axis=[int(x) for x in R[axis]], model_range_mm=[round(float(min(sa, sb)) * MM_PER_M, 3), round(float(max(sa, sb)) * MM_PER_M, 3)])
             if d.tol.kind == 'reference': rec['status'] = 'reference'
             elif d.tol.kind == 'bilateral' and d.tol.lower is not None: rec['status'] = 'pass' if d.tol.lower - 1e-9 <= dev <= d.tol.upper + 1e-9 else 'fail'

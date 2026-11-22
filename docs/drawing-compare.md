@@ -73,53 +73,12 @@ from `sldasm2glb`, so a part that failed to tessellate looks like a missing feat
 
 ### Annotated glTF (`src/drawing_gltf.py`)
 
-`python3 src/drawing_link.py DRAWING.pdf PAGE MODEL.glb --glb OUT.glb` writes the CAD mesh unchanged plus one `DIM <id>` node per linear dimension: a LINES primitive on the plane in front of the model in that dimension's view,
-green for pass, red for fail, orange for unlinked, grey for reference / no tolerance (KHR_materials_unlit). Each node's `extras` carries the text, printed and measured values, deviation, tolerance used, status and the reason when unlinked;
-the scene's `extras.drawing_link` carries the source, the general tolerance, the status counts and the per-view registration. Checked by loading the Hydro 27244607 result in Three.js in headless Chromium (8 triangle meshes, 6 dimension
-line nodes with extras). Not done: text labels in the 3D scene (glTF has no text; a viewer would draw them from `extras`), and a toggle for the layer in ipb_viz.
+`python3 src/drawing_link.py DRAWING.pdf PAGE MODEL.glb --glb OUT.glb` writes the CAD mesh unchanged plus one `DIM <id>` node per linear dimension, drawn in the plane of its view just in front of the model: a LINES primitive
+(extension lines that start at the real model vertices the dimension spans, the dimension line, an arrowhead at each end) and a TRIANGLES primitive holding the label as stroke-font geometry (`4 21/32" = 4.66 IN`, reference
+dimensions in parentheses, `?` when unlinked), written as two single-sided copies so it reads correctly from either side. Colours: green pass, red fail, orange unlinked, grey reference / no tolerance (KHR_materials_unlit).
+Each node's `extras` carries the text, printed and measured values, deviation, tolerance used, status and the reason when unlinked; the scene's `extras.drawing_link` carries the source, the general tolerance, the status counts, the
+per-view registration and `vector_labels: true`.
 
-## Native `.SLDDRW`: what is decoded (`src/slddrw_dims.py`, `python3 src/slddrw_dims.py FILE.SLDDRW`)
-
-The package contains the native drawings. `Contents/Definition` (MFC archive; strings are `FF FE FF <len> UTF-16`, classes are tagged `FF FF <schema> <len> <name>` the first time they occur) holds every annotation as an object. A dimension
-between two model entities is a `moRefDim2E_c` named `RD<n>`: after the name come the double 2.0 and **the value SolidWorks itself measured, in metres**, then (a few kB on) the dimension's text as markup
-(`4<STACK size=1 divhratio=0.1 divwgap=1.0>21<OVER>32</STACK>" \r\nTOTAL HEIGHT`; a reference dimension is wrapped in `<Border type=14> ... </Border>`), and the components it spans as `<part>-<instance>` strings.
-Other classes seen in the stream: `moDisplayDistanceDim_c` (the drawn dimension), `moDimTolerance_c`, `moDimBackupDef_c`, `moCompEdge_c`, `moSimpleSurfIdRep_c` / `moSegmLeftTrimEdgeIdRep_c` (face and edge id-reps, as for mates),
-`moDisplayAngularDim_c` / `AngleDim_c`, `ParallelPlaneDistanceDim_c`, `sgBsOrdHDim`. `Contents/DisplayLists` holds the sheet's graphics with real coordinates (text objects carry their position in metres, a rotation angle in
-radians, the string and the font); it is a candidate for a native equivalent of the PDF reader's input, not yet decoded beyond the text.
-
-Cross-check on drawing 27244607 (the six dimensions of page 12), native value against the PDF reader and the model-based link:
-
-| dimension | printed (PDF) | SolidWorks native | model-based link |
-|---|---|---|---|
-| `(5 21/32")` reference | 5.6563 | 5.6604 | not linked |
-| `4 21/32"` TOTAL HEIGHT | 4.6563 | 4.6604 | 4.6602 |
-| `2 1/2"` (top view) | 2.5 | 2.5 | 2.4998 |
-| `3 1/2"` TOTAL WIDTH | 3.5 | 3.5 | 3.5 |
-| `2 1/2"` | 2.5 | 2.5 | 2.4998 |
-| `1 3/4"` | 1.75 | 1.75 | 1.75 |
-
-The five linkable dimensions agree with SolidWorks' own measurement to 0.0002 in, so the PDF reader plus the linker reproduce what SolidWorks measures. The printed fractions are SolidWorks' 1/32 in rounding of the measured value.
-The reference dimension: SolidWorks measured 143.774 mm; its stored anchor points have the same lower height (-0.09615 m) as the overall-height dimension but an upper height of +0.047624 m, exactly 1 in above the saved
-assembly's recorded top (+0.022225 m), on a component of the cylinder sub-assembly. So in the model state the drawing was made from, that component sits 1 in higher than in the saved assembly that the mesh was built from;
-why (a configuration or display state of the cylinder sub-assembly, or a stale recorded bounding box) is not established.
-
-**Entity references (partial).** An id-rep is a record of three int32: (feature id, a per-part constant, face index): the `FACE_ID_2001` attribute values on the part's faces are `[..., feature, constant, 0, index]` (the constant 1519594658 = `0x5a932ca2` is the same bytes
-in the drawing). A rep lists the face it names first, then its neighbouring faces (as for mates). `read_dimensions` returns, per dimension, the reps it can see with their component, primary face and neighbours. For `RD1` (the reference dimension) these are face (28, 45) and face (28, 1)
-of the rod part `557067_ADN_1__HS_`, which resolve with `mates_resolve.face_index` to planes at the rod's end (z = -64.4 mm in the part frame), matching the stored end-face point (-0.0644). It is partial because the stream names a class only the first time it occurs; later references use
-a class index, and those (the other dimensions, and the second entity of `RD1`) are not followed yet.
-
-**Why the reference dimension does not link.** The drawing's stream holds a `moOverlayView` (SolidWorks' alternate position view) after the first view's dimensions, the string `Extended` sits beside the reference dimension's second entity, and both `27244607.SLDASM` and the cylinder sub-assembly store a second
-configuration named `Extended` (`Contents/Config-1`; the component tree XML lists both). The first view therefore shows the `Extended` configuration (the cylinder's rod out by its 1 in stroke) overlaid in phantom lines, and the reference dimension measures to it. The mesh was built from `Default`. The component tree XML lists both configurations but stores one set of placements, so the `Extended` placements come from the binary `Contents/Config-<id>` stream (`src/config_placements.py`): an MFC archive whose `moAssembly_c` has one `moReference_c`
-per component, each followed by its transform as 12 doubles (3x3 rotation, translation in metres). Comparing `Config-1` with `Config-0` of `27244607.SLDASM`: the pin `27244631-1` sits **25.4 mm higher** (+Y) in `Extended` and the four socket-head screws 9.525 mm higher; the tree also suppresses screws 2-4 in `Extended`.
-`sldasm2glb.py --config Extended` applies those offsets (`T' = T @ Translate(delta)`, row-vector convention, in the parent's frame). The Extended mesh spans y = -96.150 to +47.624 mm, an overall height of **143.774 mm: SolidWorks' own measurement of the reference dimension** (0.143774245 m).
-Linking page 12 against it: all six dimensions link, including `(5 21/32")` (model 5.6602 in, SolidWorks 5.6604 in, printed 5.6563 in), the five others are unchanged, and the first view registers better (mean edge distance 0.35 pt to 0.09 pt, no longer ambiguous) because the drawing's view overlays the extended position.
-The cylinder sub-assembly's own `Config-1` also differs (its bounding-box top is +0.0469 m against +0.0215 m, plus a 0.0254 value in its mates list), but no moved component is attributed to it by `config_placements.py`; its effect inside the sub-assembly is not decoded.
-
-Not decoded: the tolerance object, which view each dimension belongs to (they come out in file order), entities referenced by class index, every dimension class other than `RD<n>`, configuration differences other than a moved component transform (rotations are reported, not applied; suppression comes from the tree), and anything outside this one file.
-
-## Verification
-
-`tests/test_pdf_drawing.py` generates a synthetic drawing (`tools/make_test_drawing.py`, an invented 100 x 60 x 10 plate with a deliberately wrong dimension) and checks every
-dimension, view, datum, GD&T frame and note against the generator's ground truth. **The reader has not yet been run on a real SolidWorks PDF export.** On the public Hydro
-drawing PDFs (ipb_viz-generated envelope sheets with no dimensions) it reports 0 dimensions on 210 pages (no false positives) and reads the sheet scales.
-No drawing data is committed: test PDFs are generated at test time.
+An earlier version wrote one two-point line per dimension, far outside the model and with no label; in a geometry-only viewer (the Babylon.js sandbox) that looked like a few stray lines. Checked now by loading the Hydro
+27244607 result in Babylon.js and Three.js in headless Chromium, looking straight at each label plane from both sides: lines meet the model, arrowheads and labels are present, labels read left to right (or upwards along a vertical line)
+and upright. A viewer that does not know the layer shows it as ordinary lines and meshes; the ipb_viz layer (PR in that repo) adds a toggle and a panel.
