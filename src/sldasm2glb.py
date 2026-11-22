@@ -47,13 +47,14 @@ def find_root(models,sldasm_name):
     c=[m for m in models.values() if m['file'] and m['file'].lower()==me and m['refs']]
     return c[0] if c else max(models.values(),key=lambda m:len(m['refs']))
 def main():
-    ap=argparse.ArgumentParser(); ap.add_argument('sldasm'); ap.add_argument('--schema',required=True); ap.add_argument('-o','--out',default='out'); ap.add_argument('--include-hidden',action='store_true')
+    ap=argparse.ArgumentParser(); ap.add_argument('sldasm'); ap.add_argument('--schema',required=True); ap.add_argument('-o','--out',default='out'); ap.add_argument('--include-hidden',action='store_true'); ap.add_argument('--config',help='assembly configuration to build (default: the first one in the component tree, usually Default); an assembly can store several, e.g. Default and Extended')
     a=ap.parse_args(); os.makedirs(a.out,exist_ok=True); folder=os.path.dirname(os.path.abspath(a.sldasm))
     st=read_streams(a.sldasm)
     if 'swXmlContents/COMPINSTANCETREE' not in st: sys.exit('no COMPINSTANCETREE stream (older OLE2 SolidWorks file?)')
     files,models,_=parse_tree(st['swXmlContents/COMPINSTANCETREE'])
     me=os.path.basename(a.sldasm).lower()
-    root=[m for m in models.values() if m['file'] and m['file'].lower()==me and m['cfg']==models.get(m['id'])['cfg'] and m['refs']]
+    root=[m for m in models.values() if m['file'] and m['file'].lower()==me and m['cfg']==models.get(m['id'])['cfg'] and m['refs'] and (not a.config or m['cfg']==a.config)]
+    if a.config and not root: sys.exit('configuration %r not found; the tree holds %s' % (a.config, sorted({m['cfg'] for m in models.values() if m['file'] and m['file'].lower()==me})))
     root=root[0] if root else max(models.values(),key=lambda m:len(m['refs']))
     print('root model',root['name'],'cfg',root['cfg'],'refs',len(root['refs']))
     index=None

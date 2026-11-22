@@ -45,6 +45,21 @@ def parse_markup(s):
     return dict(printed=printed, unit=unit, reference=reference, label=label, plain=plain)
 
 
+_CLS = re.compile(rb'\xff\xff(..)([\x03-\x40])\x00([A-Za-z_][A-Za-z0-9_]*)')
+
+
+def id_triples(d, a, b):
+    """face references in d[a:b]: records of three little-endian int32 (feature id F, a per-part constant, face index I). Only the dominant constant counts (other bit patterns that look like a
+    triple, e.g. inside a double, are noise). -> [(offset, F, I)]"""
+    from collections import Counter
+    cand = [(p, struct.unpack_from('<III', d, p)) for p in range(a, b - 11)]
+    cand = [(p, t) for p, t in cand if 0 < t[0] < 5000 and t[1] >= 0x10000000 and 0 <= t[2] < 100000]
+    cnt = Counter(t[1] for _, t in cand)
+    if not cnt or cnt.most_common(1)[0][1] < 2: return []
+    top = cnt.most_common(1)[0][0]
+    return [(p, t[0], t[2]) for p, t in cand if t[1] == top]
+
+
 def read_dimensions(path_or_bytes):
     from sldcont import read_streams, read_streams_bytes
     d = path_or_bytes if isinstance(path_or_bytes, (bytes, bytearray)) else read_streams(path_or_bytes, want=lambda n: n == 'Contents/Definition').get('Contents/Definition')
@@ -64,7 +79,18 @@ def read_dimensions(path_or_bytes):
         text = cand[1] if cand else None
         stop = min(end, cand[0] if cand else e + 4000)                  # the components named before the text belong to this dimension; later strings belong to other objects
         comps = [s for so, s, se in strs if e < so < stop and re.fullmatch(r'.*[A-Za-z].*-\d+', s) and '<' not in s and '\\' not in s and not s.startswith('Display State')]
-        rec = dict(name=name, value_m=value, text=text, components=comps, offset=o)
+        # the entities it spans: each id-rep (named the first time its class occurs) lists a primary face (feature, index) and then its neighbouring faces; the component is the one named most recently before it
+        ents = []; classes = [(m.start(), m.group(3)[:m.group(2)[0]].decode()) for m in _CLS.finditer(d, e, stop) if len(m.group(3)) >= m.group(2)[0]]
+        classes = [(co, c) for co, c in classes if c.endswith('IdRep_c')]
+        cstr = [(so, s_) for so, s_, se in strs if e < so < stop and re.fullmatch(r'.*[A-Za-z].*-\d+', s_) and '<' not in s_ and '\\' not in s_ and not s_.startswith('Display State')]
+        tri = id_triples(d, e, stop)
+        for k, (co, cls) in enumerate(classes):
+            nxt = classes[k + 1][0] if k + 1 < len(classes) else stop
+            mine = [t for t in tri if co < t[0] < nxt]
+            if not mine: continue
+            comp = next((c for so_, c in reversed(cstr) if so_ < co), None)
+            ents.append(dict(rep=cls, component=comp, feature=mine[0][1], face=mine[0][2], neighbours=[(F, I) for _, F, I in mine[1:]]))
+        rec = dict(name=name, value_m=value, text=text, components=comps, entities=ents, offset=o)
         if text: rec.update({k: v for k, v in parse_markup(text).items() if k != 'plain'})
         else: rec.update(printed=None, unit=None, reference=False, label=None)
         out.append(rec)
@@ -80,6 +106,7 @@ def main():
     print(f'{len(dims)} reference dimensions')
     for r in dims:
         v = r['value_m']; inch = f'{v / M_PER_IN:.4f} in' if v else '-'
+        for x in r['entities']: print(f"        face ({x['feature']}, {x['face']}) of {x['component']}  [{x['rep']}]  + {len(x['neighbours'])} neighbouring faces")
         print(f"  {r['name']:4s} SolidWorks measured {('%.6f m' % v) if v else '-':>12} = {inch:>10} | printed {r['printed']!s:<8} {r['unit'] or '':5s} {'(reference)' if r['reference'] else '':11s} {r['label'] or '':13s} | {', '.join(r['components'])}")
 
 

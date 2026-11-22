@@ -103,7 +103,16 @@ The reference dimension: SolidWorks measured 143.774 mm; its stored anchor point
 assembly's recorded top (+0.022225 m), on a component of the cylinder sub-assembly. So in the model state the drawing was made from, that component sits 1 in higher than in the saved assembly that the mesh was built from;
 why (a configuration or display state of the cylinder sub-assembly, or a stale recorded bounding box) is not established.
 
-Not decoded: which face or edge each dimension touches, the tolerance object, which view each dimension belongs to (they come out in file order), every dimension class other than `RD<n>`, and anything outside this one file.
+**Entity references (partial).** An id-rep is a record of three int32: (feature id, a per-part constant, face index): the `FACE_ID_2001` attribute values on the part's faces are `[..., feature, constant, 0, index]` (the constant 1519594658 = `0x5a932ca2` is the same bytes
+in the drawing). A rep lists the face it names first, then its neighbouring faces (as for mates). `read_dimensions` returns, per dimension, the reps it can see with their component, primary face and neighbours. For `RD1` (the reference dimension) these are face (28, 45) and face (28, 1)
+of the rod part `557067_ADN_1__HS_`, which resolve with `mates_resolve.face_index` to planes at the rod's end (z = -64.4 mm in the part frame), matching the stored end-face point (-0.0644). It is partial because the stream names a class only the first time it occurs; later references use
+a class index, and those (the other dimensions, and the second entity of `RD1`) are not followed yet.
+
+**Why the reference dimension does not link.** The drawing's stream holds a `moOverlayView` (SolidWorks' alternate position view) after the first view's dimensions, the string `Extended` sits beside the reference dimension's second entity, and both `27244607.SLDASM` and the cylinder sub-assembly store a second
+configuration named `Extended` (`Contents/Config-1`; the component tree XML lists both). The first view therefore shows the `Extended` configuration (the cylinder's rod out by its 1 in stroke) overlaid in phantom lines, and the reference dimension measures to it. The mesh was built from `Default`; the XML tree stores
+the same placements for both configurations (the `--config` option of `sldasm2glb.py` selects the tree but changes nothing here), so a mesh for `Extended` needs the per-configuration placements from the binary `Config-1` stream, which is not decoded. The overlay's linework (the rod drawn thin below the block) is the part of the drawing with no model edges in the overlay image.
+
+Not decoded: the tolerance object, which view each dimension belongs to (they come out in file order), entities referenced by class index, every dimension class other than `RD<n>`, and anything outside this one file.
 
 ## Verification
 
