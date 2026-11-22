@@ -80,10 +80,11 @@ def dimension_segments(r):
     # the label, centred above the dimension line (for a line running up the view, rotated to read upwards); drawn as thin single-sided quads, one copy readable from the viewer's side, one from the other
     height = 0.035 * E; text = label_text(r); width = (3 * len(text) - 1) * height / 4.0
     up = np.array([0.0, 1.0, 0.0])                            # letters stand up in the world; a line running up the view is read upwards
-    if abs(float(along @ up)) > 0.7: t = along * (1.0 if along @ up > 0 else -1.0); n = across
+    off = 0.9 * height
+    if abs(float(along @ up)) > 0.7: t = along * (1.0 if along @ up > 0 else -1.0); out = across; n = -out; off = 1.15 * height      # a vertical line: read upwards, the letters' tops towards the line
     else:
-        t = along; n = across * (-1.0 if across @ up < -0.1 else 1.0)
-    centre = (a + b) / 2 + n * (0.9 * height); sw = 0.1 * height
+        t = along; n = across * (-1.0 if across @ up < -0.1 else 1.0); out = n
+    centre = (a + b) / 2 + out * off; sw = 0.1 * height
     tw = np.cross(t, n); tw = tw / np.linalg.norm(tw)         # the side the text reads correctly from (the basis can be left-handed, so this need not be +w)
     front = stroke_quads(np.array(text_strokes(text, centre - t * (width / 2), t, n, height)), tw, sw)
     back = stroke_quads(np.array(text_strokes(text, centre + t * (width / 2), -t, n, height)), tw, sw, back=True)
