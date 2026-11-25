@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check one sheet of a vector PDF drawing against a CAD model: link its dimensions to the mesh, write the annotated glTF, and write the determinacy report.
 
-  run_check(pdf, page, glb, outdir, bom_csv=None, tol_mm=0.25, progress=None) -> summary dict        python3 src/drawing_check.py DRAWING.pdf PAGE MODEL.glb OUTDIR [--bom BOM.csv] [--tol-mm 0.25]
+  run_check(pdf, page, glb, outdir, bom_csv=None, tol_mm=0.25, progress=None) -> summary dict        python3 src/drawing_check.py DRAWING.pdf PAGE MODEL.glb OUTDIR [--bom BOM.csv] [--tol-mm 0.25] [--source NAME]
 
 Writes into OUTDIR: annotated.glb (the model plus one node per dimension, see drawing_gltf.py), results.json (every dimension with its printed and measured value and status; this holds the drawing's text),
 determinacy.json and determinacy.md (what the sheet defines of the model, see determinacy.py), summary.json (counts only). The returned summary has no drawing text, only counts and file names, so a host may log it.
@@ -16,7 +16,7 @@ class CheckError(Exception):
     def __init__(self, code, message): super().__init__(message); self.code = code
 
 
-def run_check(pdf, page, glb, outdir, bom_csv=None, tol_mm=0.25, progress=None):
+def run_check(pdf, page, glb, outdir, bom_csv=None, tol_mm=0.25, progress=None, source=None):
     step = progress or (lambda s: None); os.makedirs(outdir, exist_ok=True)
     try:
         import numpy, cv2, scipy, pdfminer  # noqa
@@ -35,7 +35,7 @@ def run_check(pdf, page, glb, outdir, bom_csv=None, tol_mm=0.25, progress=None):
     try: res = L.link_sheet(sheet, glb)
     except Exception as e: raise CheckError('link-failed', f'the dimensions could not be linked to the model ({type(e).__name__}: {str(e)[:120]})')
     if not res['views']: raise CheckError('no-views', 'no orthographic view on this page could be registered to the model')
-    step('annotate'); annotate_glb(glb, res, os.path.join(outdir, 'annotated.glb'), source=f'{os.path.basename(pdf)} page {page}')
+    step('annotate'); annotate_glb(glb, res, os.path.join(outdir, 'annotated.glb'), source=f'{source or os.path.basename(pdf)} page {page}')
     json.dump(res, open(os.path.join(outdir, 'results.json'), 'w'), default=float)
     step('determinacy'); bom = None
     if bom_csv:
@@ -55,7 +55,7 @@ def main():
     if len(a) < 4 or a[0].startswith('-'): raise SystemExit(__doc__)
     opt = lambda n, d=None: a[a.index(n) + 1] if n in a else d
     bom = open(opt('--bom')).read() if opt('--bom') else None
-    try: summary = run_check(a[0], int(a[1]), a[2], a[3], bom, float(opt('--tol-mm', 0.25)), lambda s: print('STEP', s, flush=True))
+    try: summary = run_check(a[0], int(a[1]), a[2], a[3], bom, float(opt('--tol-mm', 0.25)), lambda s: print('STEP', s, flush=True), opt('--source'))
     except CheckError as e: print('ERROR', e.code, str(e), flush=True); sys.exit(2)
     print('RESULT', json.dumps(summary, default=float), flush=True)
 

@@ -149,7 +149,7 @@ class Server:
         if not j.done: raise ValueError('the conversion has not finished: give "part" or wait for job_done')
         if not getattr(j, 'inst', None): raise ValueError('this job has no assembly: give "part" (a converted part key)')
         return s.assembly_glb(j)
-    def start_check(s, j, pdf, page, part=None, bom_csv=None, tol_mm=0.25):
+    def start_check(s, j, pdf, page, part=None, bom_csv=None, tol_mm=0.25, source=None):
         with s.lock:
             if any(c['state'] == 'running' for c in j.checks.values()): raise RuntimeError('a drawing check is already running on this job')
             cid = uuid.uuid4().hex[:10]; c = dict(id=cid, state='running', step='queued', page=page, part=part, error=None, summary=None, t0=time.time(), dir=os.path.join(j.dir, 'checks', cid)); j.checks[cid] = c
@@ -157,7 +157,7 @@ class Server:
         def go():
             try:
                 glb = s.check_model(j, part)
-                cmd = [sys.executable, '-E', os.path.join(HERE, 'drawing_check.py'), pdf, str(page), glb, c['dir'], '--tol-mm', str(tol_mm)]
+                cmd = [sys.executable, '-E', os.path.join(HERE, 'drawing_check.py'), pdf, str(page), glb, c['dir'], '--tol-mm', str(tol_mm)] + (['--source', source] if source else [])
                 if bom_csv: bp = os.path.join(c['dir'], 'bom_in.csv'); open(bp, 'w', newline='').write(bom_csv); cmd += ['--bom', bp]
                 pr = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True); j.procs.add(pr)
                 timer = threading.Timer(s.a.check_timeout, lambda: pr.kill()); timer.start()
@@ -454,7 +454,7 @@ def make_handler(S):
             if not ok: self._json(401, dict(error='bad or missing token'))
             return ok
         def _post_check(self, jid, query):
-            """POST /jobs/<id>/checks: {doc: index of a PDF in the job (the 'docs' of the import), page, part?, bom_csv?, tol_mm?} as JSON, or the PDF itself as application/pdf with ?page=N[&part=K][&tol_mm=X]"""
+            """POST /jobs/<id>/checks: {doc: index of a PDF in the job (the 'docs' of the import), page, part?, bom_csv?, tol_mm?} as JSON, or the PDF itself as application/pdf with ?page=N[&part=K][&tol_mm=X][&name=FILE.pdf]"""
             j = S.jobs.get(jid)
             if not j: return self._json(404, dict(error='not found'))
             n = int(self.headers.get('Content-Length', 0)); ctype = self.headers.get('Content-Type', ''); bom = None
@@ -463,10 +463,10 @@ def make_handler(S):
                     if n > 1 << 20: return self._json(413, dict(error='request too large'))
                     body = json.loads(self.rfile.read(n) or b'{}'); idx = body.get('doc'); page = int(body.get('page', 1)); part = body.get('part') or None; tol = float(body.get('tol_mm', 0.25)); bom = body.get('bom_csv')
                     if not isinstance(idx, int) or not 0 <= idx < len(j.doc_files): return self._json(400, dict(error='"doc" must be the index of a PDF in this job (0..%d)' % (len(j.doc_files) - 1)))
-                    pdf = j.doc_files[idx]
+                    pdf = j.doc_files[idx]; name = os.path.basename(pdf)
                 elif 'pdf' in ctype:
                     if n > 300 << 20: return self._json(413, dict(error='PDF too large (300 MB limit)'))
-                    page = int(query.get('page', ['1'])[0]); part = query.get('part', [''])[0] or None; tol = float(query.get('tol_mm', ['0.25'])[0]); pdf = os.path.join(j.dir, 'check_upload_%s.pdf' % uuid.uuid4().hex[:8])
+                    page = int(query.get('page', ['1'])[0]); part = query.get('part', [''])[0] or None; tol = float(query.get('tol_mm', ['0.25'])[0]); name = os.path.basename(query.get('name', [''])[0])[:120]; pdf = os.path.join(j.dir, 'check_upload_%s.pdf' % uuid.uuid4().hex[:8])
                     with open(pdf, 'wb') as f:
                         while n > 0:
                             b = self.rfile.read(min(n, 1 << 20))
@@ -476,7 +476,8 @@ def make_handler(S):
                 else: return self._json(415, dict(error='send JSON or application/pdf'))
             except (ValueError, TypeError): return self._json(400, dict(error='bad request body or parameters'))
             if not 1 <= page <= 10000 or not 0.05 <= tol <= 5 or (part is not None and not re.fullmatch(r'[\w.-]+', str(part))) or (bom is not None and (not isinstance(bom, str) or len(bom) > 200_000)): return self._json(400, dict(error='page must be 1..10000, tol_mm 0.05..5, part a part key, bom_csv a string under 200 kB'))
-            try: c = S.start_check(j, pdf, page, part, bom, tol)
+            name = re.sub(r'[^\w .()\-]', '_', name or '')[:120] or None
+            try: c = S.start_check(j, pdf, page, part, bom, tol, name)
             except RuntimeError as e: return self._json(409, dict(error=str(e)))
             self._json(202, dict(check=c['id'], url=f'/jobs/{jid}/checks/{c["id"]}'))
         def do_POST(self):

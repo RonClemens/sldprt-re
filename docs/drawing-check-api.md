@@ -9,7 +9,7 @@ analysed for what the sheet determines of the model (`determinacy.py`). The work
 `POST /jobs/<job>/checks` -> `202 {"check": "<id>", "url": "/jobs/<job>/checks/<id>"}`. Two body forms:
 
 - JSON `{"doc": 3, "page": 12, "part": "27244630", "bom_csv": "item,name,description,length,comments\n...", "tol_mm": 0.25}`: `doc` is the index of a PDF the import found (the same index as `GET /jobs/<job>/docs/<n>.pdf`).
-- The PDF itself, `Content-Type: application/pdf`, with `?page=12[&part=KEY][&tol_mm=0.25]` (up to 300 MB). BOM text is not accepted in this form.
+- The PDF itself, `Content-Type: application/pdf`, with `?page=12[&part=KEY][&tol_mm=0.25][&name=FILE.pdf]` (`name` is only shown in the annotated model's source label) (up to 300 MB). BOM text is not accepted in this form.
 
 `page` is 1-based (1..10000). `part` is a converted part key (as in the `part_done` events); without it the whole assembly is used, which needs a finished job with an assembly (otherwise `bad-request`). `bom_csv` (optional, up to 200 kB) is the sheet's
 title-block table as CSV with any of the columns item, name, description, length, comments, material; it enables the BOM checks of the determinacy report. `tol_mm` (0.05..5, default 0.25) is how close a dimension end must lie to a
