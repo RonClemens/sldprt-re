@@ -95,3 +95,18 @@ Tried on Hydro 27244607 (Standard configuration): of 21 component extents the sh
 `PLATE, 1 3/4" x 3 1/2"` (0.375 in over), and the PIN row cites the block's drawing number 27244630 while the pin component is 27244631. Both are findings to review against the component drawings, not conclusions: the BOM text was
 entered by hand from the sheet for this test, and the CAD thickness may include features the stock line does not describe. Works on bounding extents only (see the module docstring); `tests/test_determinacy.py` checks it on a synthetic assembly. A FreeCAD
 (conda-forge, headless) build of a solid from only the printed dimensions and BOM text gave the same picture: the six dimensions fix the width, the axis position and the overall height; every other extent had to be assumed.
+
+### Package index and glyph-index text (`src/tdp_index.py`, `pdf_drawing._decode_cid`)
+
+`python3 src/tdp_index.py PACKAGE.pdf OUT.json [--md OUT.md] [--pages 1-40] [--workers 4]` reads every page of a drawing package once and classifies it (assembly, detail-part, layout-no-dims, schematic-or-wiring, piping, list-or-cover, other, unreadable) with the
+evidence for the class, the counts the dimension reader finds, the SEE DWG references, a drawing-number guess from the title block, and `link_ready`. The classes are heuristics for sorting a package. On the 151-page Hydro package (2.3 minutes with 4 workers): 35 assembly,
+48 detail-part, 36 layout-no-dims, 12 schematic-or-wiring, 4 piping, 2 list-or-cover, 12 other, 2 unreadable; 1246 dimensions read; 61 pages link-ready. The drawing-number guess agrees with the independent index in ipb_viz (`tools/index-tdp.py`) on 111 of 151 pages: use that index
+for the number and keep this one for what the reader can do with each page.
+
+**Fonts that are not embedded.** 42 of the 151 pages use Arial / Times New Roman / Century Gothic without embedding them or a ToUnicode map, so pdfminer returned `(cid:N)` and the readers saw nonsense (page 40, the block's detail drawing, gave 2 dimensions). For these TrueType fonts
+the code is the glyph index, and for printable ASCII that is the character code minus 29, which `_decode_cid` applies; page 40 then reads 15 dimensions in 3 views. Symbols (the diameter sign, counterbore, degree) have other glyph indices that are not decoded: 40 pages still have some,
+reported in the page's warnings, and a dimension such as a diameter may then lack its symbol.
+
+**Part drawings are not linked well yet.** Linking the block's detail drawing (page 40) to its CAD part (27244630) registered 2 views (one flagged ambiguous) and linked 2 of 15 dimensions, one of them a failing false link: the linker was built for assembly
+sheets. The mesh also lacks one face of the part (face 97, KeyError(1) in the part converter). The sheet prints 3 1/2" (twice) and 2 1/8", which are the CAD extents (3.5 x 3.5 x 2.125 in; I did not check which view each belongs to); the assembly sheet's BOM stock line `PLATE, 1 3/4" x 3 1/2"` does not match them. A feature-level comparison needs the part's
+planes and cylinders (hole axes), which the converter has but the mesh does not carry.

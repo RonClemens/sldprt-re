@@ -135,12 +135,23 @@ def _add_path(geo, ops, fill, stroke, width):
         if len(xs) == 2 and len(ys) == 2: geo.boxes.append([xs[0], ys[0], xs[1], ys[1]])
 
 
+_CID = re.compile(r'^\(cid:(\d+)\)$')
+
+
+def _decode_cid(t):
+    """A font that is not embedded and has no ToUnicode map gives pdfminer `(cid:N)`; for the usual TrueType fonts (Arial, Times New Roman, Century Gothic ...) the code is the glyph index, which for printable ASCII is the
+    character code minus 29 (glyph 3 is the space). Other glyphs (symbols such as the diameter sign) are left as `(cid:N)` so the caller can see they were not decoded."""
+    m = _CID.match(t)
+    if m and 3 <= int(m.group(1)) <= 97: return chr(int(m.group(1)) + 29)
+    return t
+
+
 def _walk(obj, chars, geo):
     from pdfminer.layout import LTChar, LTLine, LTRect, LTCurve
     if isinstance(obj, LTChar):
         a, b, _, _, e, f = obj.matrix; rot = int(round(math.degrees(math.atan2(b, a)))) % 360
         size = obj.height if rot in (0, 180) else obj.width
-        chars.append(dict(c=obj.get_text(), x=e, y=f, adv=obj.adv, size=size, rot=rot, bbox=list(obj.bbox)))
+        txt = obj.get_text(); chars.append(dict(c=_decode_cid(txt), dec=txt != _decode_cid(txt), x=e, y=f, adv=obj.adv, size=size, rot=rot, bbox=list(obj.bbox)))
         return
     if isinstance(obj, (LTLine, LTRect, LTCurve)):
         ops = getattr(obj, 'original_path', None)
@@ -211,7 +222,9 @@ def read_pdf(path, pages=None, keep_lines=False):
         chars = []; geo = Geo()
         _walk(page, chars, geo)
         sheet = Sheet(index=pi, size_pt=[round(page.width, 2), round(page.height, 2)])
-        runs = _runs_from_chars(chars)
+        runs = _runs_from_chars(chars); ndec = sum(1 for c in chars if c.get('dec')); nbad = sum(1 for c in chars if c['c'].startswith('(cid:'))
+        if ndec: sheet.warnings.append(f'text decoded from glyph indices ({ndec} characters; the font is not embedded)')
+        if nbad: sheet.warnings.append(f'{nbad} characters could not be decoded (symbols of a font that is not embedded)')
         if not runs: sheet.warnings.append('no text on this page (raster or outlined text: needs OCR)')
         _read_sheet(sheet, runs, geo, keep_lines=keep_lines)
         drawing.sheets.append(sheet)
