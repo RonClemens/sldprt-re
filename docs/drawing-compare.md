@@ -82,3 +82,16 @@ per-view registration and `vector_labels: true`.
 An earlier version wrote one two-point line per dimension, far outside the model and with no label; in a geometry-only viewer (the Babylon.js sandbox) that looked like a few stray lines. Checked now by loading the Hydro
 27244607 result in Babylon.js and Three.js in headless Chromium, looking straight at each label plane from both sides: lines meet the model, arrowheads and labels are present, labels read left to right (or upwards along a vertical line)
 and upright. A viewer that does not know the layer shows it as ordinary lines and meshes; the ipb_viz layer (PR in that repo) adds a toggle and a panel.
+
+### Determinacy report (`src/determinacy.py`)
+
+`python3 src/drawing_link.py DRAWING.pdf PAGE MODEL.glb --json > results.json` then `python3 src/determinacy.py results.json MODEL.glb [--bom BOM.csv] [--md OUT.md] [--json OUT.json]` answers a different question from the link:
+not "does the drawing agree with the CAD" but "what does the sheet actually define of the model". For each component (the children of the assembly root) and each model axis it classifies the extent as **dimensioned**
+(a dimension spans it, or dimensions reference both end faces), **located** (one face or the centre is referenced, the size is not) or **undefined** (nothing on the sheet touches it: a model built from the sheet alone must assume it). Reference
+dimensions are listed but fix nothing. It also lists dimensions that touch no component face (they refer to features inside a component), the per-view coverage of major coordinates, and, with a BOM table as CSV, whether each component fits
+the stock the BOM lists (`PLATE`, `BAR`, ... rows with three sizes), whether BOM sizes match a CAD extent, and whether the BOM identifies the component unambiguously (two rows citing one part number, or a component no row cites).
+
+Tried on Hydro 27244607 (Standard configuration): of 21 component extents the sheet dimensions 1, locates 8 and leaves 12 undefined (the screws are not touched at all); the front and top views dimension 5 of 140 and 3 of 202 major coordinates. Block thickness 2.125 in does not fit the BOM stock
+`PLATE, 1 3/4" x 3 1/2"` (0.375 in over), and the PIN row cites the block's drawing number 27244630 while the pin component is 27244631. Both are findings to review against the component drawings, not conclusions: the BOM text was
+entered by hand from the sheet for this test, and the CAD thickness may include features the stock line does not describe. Works on bounding extents only (see the module docstring); `tests/test_determinacy.py` checks it on a synthetic assembly. A FreeCAD
+(conda-forge, headless) build of a solid from only the printed dimensions and BOM text gave the same picture: the six dimensions fix the width, the axis position and the overall height; every other extent had to be assumed.
