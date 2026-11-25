@@ -2,8 +2,10 @@
 """Local helper for progressive SolidWorks import (see docs/viewer-integration.md).
 usage: serve.py [--token T|auto] [--public-url https://tunnel] [--allow-host H] [--replay JOBDIR [--speed X]] [--port 8765] [--origin https://ronclemens.github.io] [--jobs N] [--timeout SEC] [--work DIR]
 POST /jobs (raw .sldprt/.sldasm/.zip body, header X-Filename) -> {job}; GET /jobs/<id>/events (SSE); GET /jobs/<id>/parts/<key>.glb;
-GET /jobs/<id>/assembly.glb; GET /jobs/<id>/docs/<n>.pdf; GET /jobs/<id>/sheets/<n>.png; POST /jobs/<id>/cancel; GET /health. Binds to loopback only."""
+GET /jobs/<id>/assembly.glb; GET /jobs/<id>/docs/<n>.pdf; GET /jobs/<id>/sheets/<n>.png; POST /jobs/<id>/cancel; GET /health.
+Drawing check (docs/drawing-check-api.md): POST /jobs/<id>/checks (JSON {doc|pdf, page, part?, bom_csv?, tol_mm?} or a raw application/pdf body with ?page=N) -> {check}; GET /jobs/<id>/checks/<cid> (status, summary); GET /jobs/<id>/checks/<cid>/annotated.glb|determinacy.md|determinacy.json|results.json. Binds to loopback only."""
 import argparse, hashlib, json, os, re, shutil, subprocess, sys, tempfile, threading, time, uuid
+from urllib.parse import urlsplit, parse_qs
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
@@ -21,6 +23,7 @@ class Job:
         s.ready = {}      # key -> glb path
         s.doc_files = []  # index -> extracted drawing PDF path (see GET /jobs/<id>/docs/<n>.pdf)
         s.sheet_files = []  # index -> sheet preview PNG of a SolidWorks drawing (see GET /jobs/<id>/sheets/<n>.png and the 'drawings' event)
+        s.checks = {}     # drawing checks started on this job: id -> dict (see Server.start_check)
         s.t0 = time.time()
         s.convert_ready = threading.Event()  # set once the client has POSTed /select (or the wait times out)
         s.selected = None                    # None (not yet chosen) | 'all' | set of selected instance ids
@@ -135,6 +138,48 @@ class Server:
                     j.emit(r['ev'], **d)
             finally: j.done = True
         threading.Thread(target=go, daemon=True).start(); return j
+    # ---- drawing check: link one sheet of a vector PDF drawing to the job's model (drawing_check.py, run as a subprocess so a hung read can be killed)
+    CHECK_FILES = ('annotated.glb', 'determinacy.md', 'determinacy.json', 'results.json')
+    def check_model(s, j, part):
+        """the GLB to check against: one converted part (key as in the 'part_done' events), or the whole assembly; raises ValueError with a message for the caller"""
+        if part:
+            path = j.ready.get(part)
+            if not path or not os.path.exists(path): raise ValueError('unknown or unfinished part ' + repr(part))
+            return path
+        if not j.done: raise ValueError('the conversion has not finished: give "part" or wait for job_done')
+        if not getattr(j, 'inst', None): raise ValueError('this job has no assembly: give "part" (a converted part key)')
+        return s.assembly_glb(j)
+    def start_check(s, j, pdf, page, part=None, bom_csv=None, tol_mm=0.25):
+        with s.lock:
+            if any(c['state'] == 'running' for c in j.checks.values()): raise RuntimeError('a drawing check is already running on this job')
+            cid = uuid.uuid4().hex[:10]; c = dict(id=cid, state='running', step='queued', page=page, part=part, error=None, summary=None, t0=time.time(), dir=os.path.join(j.dir, 'checks', cid)); j.checks[cid] = c
+        os.makedirs(c['dir'], exist_ok=True)
+        def go():
+            try:
+                glb = s.check_model(j, part)
+                cmd = [sys.executable, '-E', os.path.join(HERE, 'drawing_check.py'), pdf, str(page), glb, c['dir'], '--tol-mm', str(tol_mm)]
+                if bom_csv: bp = os.path.join(c['dir'], 'bom_in.csv'); open(bp, 'w', newline='').write(bom_csv); cmd += ['--bom', bp]
+                pr = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True); j.procs.add(pr)
+                timer = threading.Timer(s.a.check_timeout, lambda: pr.kill()); timer.start()
+                try:
+                    for line in pr.stdout:
+                        k, _, rest = line.rstrip('\n').partition(' ')
+                        if k == 'STEP': c['step'] = rest
+                        elif k == 'RESULT': c['summary'] = json.loads(rest)
+                        elif k == 'ERROR': code, _, msg = rest.partition(' '); c['error'] = dict(code=code, message=msg)
+                    pr.wait(); err = pr.stderr.read()
+                finally: timer.cancel(); j.procs.discard(pr)
+                if j.cancel: c['state'] = 'cancelled'
+                elif c['summary']: c['state'] = 'done'
+                else:
+                    if not c['error']:     # killed by the timeout, or crashed without a message
+                        c['error'] = dict(code='timeout' if pr.returncode in (-9, -15) else 'crashed', message='the check took longer than %ds and was stopped' % s.a.check_timeout if pr.returncode in (-9, -15) else 'the check stopped unexpectedly (%s)' % (err.strip().splitlines()[-1][:160] if err.strip() else 'no message'))
+                    c['state'] = 'error'
+            except ValueError as e: c['error'] = dict(code='bad-request', message=str(e)); c['state'] = 'error'
+            except Exception as e: c['error'] = dict(code='failed', message=type(e).__name__ + ': ' + str(e)[:160]); c['state'] = 'error'
+            finally: c['step'] = c['state']
+        threading.Thread(target=go, daemon=True).start(); return c
+    def check_status(s, j, c): return dict(id=c['id'], state=c['state'], step=c['step'], page=c['page'], part=c['part'], error=c['error'], summary=c['summary'], seconds=round(time.time() - c['t0'], 1), files=[f for f in s.CHECK_FILES if os.path.exists(os.path.join(c['dir'], f))] if c['state'] == 'done' else [])
     def extract_drawings(s, j, src):
         """SolidWorks drawings (.SLDDRW) in the upload: a preview image per sheet plus the models each references.
         Runs alongside the conversion and reports with one 'drawings' event when done: key (same normalization as
@@ -408,9 +453,37 @@ def make_handler(S):
             ok = self.headers.get('Authorization', '') == 'Bearer ' + S.a.token or q == S.a.token
             if not ok: self._json(401, dict(error='bad or missing token'))
             return ok
+        def _post_check(self, jid, query):
+            """POST /jobs/<id>/checks: {doc: index of a PDF in the job (the 'docs' of the import), page, part?, bom_csv?, tol_mm?} as JSON, or the PDF itself as application/pdf with ?page=N[&part=K][&tol_mm=X]"""
+            j = S.jobs.get(jid)
+            if not j: return self._json(404, dict(error='not found'))
+            n = int(self.headers.get('Content-Length', 0)); ctype = self.headers.get('Content-Type', ''); bom = None
+            try:
+                if 'json' in ctype:
+                    if n > 1 << 20: return self._json(413, dict(error='request too large'))
+                    body = json.loads(self.rfile.read(n) or b'{}'); idx = body.get('doc'); page = int(body.get('page', 1)); part = body.get('part') or None; tol = float(body.get('tol_mm', 0.25)); bom = body.get('bom_csv')
+                    if not isinstance(idx, int) or not 0 <= idx < len(j.doc_files): return self._json(400, dict(error='"doc" must be the index of a PDF in this job (0..%d)' % (len(j.doc_files) - 1)))
+                    pdf = j.doc_files[idx]
+                elif 'pdf' in ctype:
+                    if n > 300 << 20: return self._json(413, dict(error='PDF too large (300 MB limit)'))
+                    page = int(query.get('page', ['1'])[0]); part = query.get('part', [''])[0] or None; tol = float(query.get('tol_mm', ['0.25'])[0]); pdf = os.path.join(j.dir, 'check_upload_%s.pdf' % uuid.uuid4().hex[:8])
+                    with open(pdf, 'wb') as f:
+                        while n > 0:
+                            b = self.rfile.read(min(n, 1 << 20))
+                            if not b: break
+                            f.write(b); n -= len(b)
+                    if n > 0: os.remove(pdf); return self._json(400, dict(error='upload incomplete'))
+                else: return self._json(415, dict(error='send JSON or application/pdf'))
+            except (ValueError, TypeError): return self._json(400, dict(error='bad request body or parameters'))
+            if not 1 <= page <= 10000 or not 0.05 <= tol <= 5 or (part is not None and not re.fullmatch(r'[\w.-]+', str(part))) or (bom is not None and (not isinstance(bom, str) or len(bom) > 200_000)): return self._json(400, dict(error='page must be 1..10000, tol_mm 0.05..5, part a part key, bom_csv a string under 200 kB'))
+            try: c = S.start_check(j, pdf, page, part, bom, tol)
+            except RuntimeError as e: return self._json(409, dict(error=str(e)))
+            self._json(202, dict(check=c['id'], url=f'/jobs/{jid}/checks/{c["id"]}'))
         def do_POST(self):
             if not self._auth(): return
-            self.path = self.path.split('?')[0]
+            query = parse_qs(urlsplit(self.path).query); self.path = self.path.split('?')[0]
+            m = re.match(r'^/jobs/(\w+)/checks$', self.path)
+            if m: return self._post_check(m.group(1), query)
             if self.path == '/jobs' and S.a.replay:
                 n = int(self.headers.get('Content-Length', 0))
                 while n > 0:    # the upload body is ignored in replay mode
@@ -482,6 +555,18 @@ def make_handler(S):
                     if not b: break
                     f.write(b); n -= len(b)
             self._json(200, dict(offset=S.upload_offset(meta['id'])))
+        def _get_check(self, jid, cid, fname):
+            j = S.jobs.get(jid)
+            if not j: return self._json(404, dict(error='not found'))
+            if cid is None: return self._json(200, dict(checks=[S.check_status(j, c) for c in j.checks.values()]))
+            c = j.checks.get(cid)
+            if not c: return self._json(404, dict(error='not found'))
+            if fname is None: return self._json(200, S.check_status(j, c))
+            path = os.path.join(c['dir'], fname)
+            if fname not in S.CHECK_FILES or c['state'] != 'done' or not os.path.exists(path): return self._json(404, dict(error='not ready'))
+            ct = dict(glb='model/gltf-binary', md='text/markdown; charset=utf-8', json='application/json')[fname.rsplit('.', 1)[1]]
+            sz = os.path.getsize(path); self.send_response(200); self._cors(); self.send_header('Content-Type', ct); self.send_header('Content-Length', str(sz)); self.end_headers()
+            with open(path, 'rb') as f: shutil.copyfileobj(f, self.wfile)
         def do_GET(self):
             if self.path.split('?')[0] == '/health': return self._json(200, dict(ok=True, version=VERSION, auth=bool(S.a.token), replay=bool(S.a.replay)))
             if not self._auth(): return
@@ -491,6 +576,8 @@ def make_handler(S):
             if m:
                 u = S._up(m.group(1))
                 return self._json(200, dict(offset=S.upload_offset(u['id']), size=u['size'])) if u else self._json(404, dict(error='unknown upload'))
+            m = re.match(r'^/jobs/(\w+)/checks(?:/(\w+)(?:/([\w.]+))?)?$', self.path)
+            if m: return self._get_check(*m.groups())
             m = re.match(r'^/jobs/(\w+)/(events|assembly\.glb|parts/([\w.-]+)\.glb|docs/(\d+)\.pdf|sheets/(\d+)\.png)$', self.path)
             j = S.jobs.get(m.group(1)) if m else None
             if not j: return self._json(404, dict(error='not found'))
@@ -538,6 +625,7 @@ def main():
     ap.add_argument('--jobs', type=int, default=max(1, (os.cpu_count() or 2) - 1)); ap.add_argument('--timeout', type=int, default=600, help='per-part seconds; a part that times out is retried once with --retry-factor times this and half the parallelism')
     ap.add_argument('--retry-factor', type=float, default=2.0); ap.add_argument('--work', help='work dir (cache, jobs). Default: ~/.sldprt-re/work, so the conversion cache survives restarts')
     ap.add_argument('--select-timeout', type=float, default=1800, help='seconds to wait after \'plan\' for the viewer\'s POST /jobs/<id>/select before converting everything anyway (the viewer answers immediately for a small import, or once its selection modal is confirmed for a large one; default 30 minutes -- a real multi-thousand-row import can take a person a while to pick through, and this only costs an idle wait, not CPU, so it is deliberately generous)')
+    ap.add_argument('--check-timeout', type=int, default=900, help='seconds a drawing check may run before it is stopped')
     ap.add_argument('--token', default=os.environ.get('SLD_TOKEN'), help='require this bearer token (header, or ?token= for EventSource)')
     ap.add_argument('--replay', metavar='JOBDIR', help='serve a recorded job dir (events.jsonl + parts/) instead of converting'); ap.add_argument('--speed', type=float, default=1.0)
     ap.add_argument('--allow-host', action='append', default=['github.com', 'githubusercontent.com'], help='hosts the helper may download from (import by URL); subdomains included')
