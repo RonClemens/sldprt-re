@@ -83,6 +83,7 @@ class Geo:
     def __init__(s):
         s.segs = []     # [x0, y0, x1, y1, width]
         s.arcs = []     # [cx, cy, r, bbox]
+        s.arc_w = []    # stroke width of each arc, parallel to arcs
         s.tris = []     # filled triangles: 3 points
         s.boxes = []    # axis-aligned rectangles [x0, y0, x1, y1]
         s.glyphs = []   # bounding boxes of small filled curve shapes (outlined text, parentheses)
@@ -103,7 +104,7 @@ def _add_path(geo, ops, fill, stroke, width):
             pts = np.vstack(curve_pts)
             fit = _fit_circle(pts[:: max(1, len(pts) // 24)])
             if fit and fit[2] > 0.5 and fit[3] < 0.02 * fit[2] + 0.05:
-                geo.arcs.append([fit[0], fit[1], fit[2], [float(pts[:, 0].min()), float(pts[:, 1].min()), float(pts[:, 0].max()), float(pts[:, 1].max())]])
+                geo.arcs.append([fit[0], fit[1], fit[2], [float(pts[:, 0].min()), float(pts[:, 1].min()), float(pts[:, 0].max()), float(pts[:, 1].max())]]); geo.arc_w.append(float(width))
             else:
                 for a, b in zip(pts, pts[1:]): geo.segs.append([a[0], a[1], b[0], b[1], width])
         curve_pts = []
@@ -138,11 +139,15 @@ def _add_path(geo, ops, fill, stroke, width):
 _CID = re.compile(r'^\(cid:(\d+)\)$')
 
 
+_SYMBOLS = {131: '\u00b0', 145: '\u00d8'}        # glyph indices seen in the Hydro package (page 40): '45(cid:131)' reads 45 degrees, '(cid:145) 3/4"' reads a diameter; assumed the same for the fonts of that package
+
+
 def _decode_cid(t):
     """A font that is not embedded and has no ToUnicode map gives pdfminer `(cid:N)`; for the usual TrueType fonts (Arial, Times New Roman, Century Gothic ...) the code is the glyph index, which for printable ASCII is the
     character code minus 29 (glyph 3 is the space). Other glyphs (symbols such as the diameter sign) are left as `(cid:N)` so the caller can see they were not decoded."""
     m = _CID.match(t)
     if m and 3 <= int(m.group(1)) <= 97: return chr(int(m.group(1)) + 29)
+    if m and int(m.group(1)) in _SYMBOLS: return _SYMBOLS[int(m.group(1))]
     return t
 
 

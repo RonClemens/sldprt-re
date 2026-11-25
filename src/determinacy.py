@@ -132,7 +132,7 @@ def bom_findings(comps, bom, tol_in):
         if not left: issues.append(f"No BOM row identifies {k}."); continue
         scored = sorted(((_row_vs_component(r, reps[k], tol_in), r) for r in left), key=lambda t: -t[0]['score'])
         if scored[0][0]['score'] > 0:
-            best = scored[0][0]; best['cited'] = False; claimed[id(scored[0][1])] = k; out.append(best); issues.append(f"No BOM row cites {_token(k)}; item {best['bom_item'] or '?'} was matched to {k} by its sizes only.")
+            best = scored[0][0]; best['cited'] = False; claimed[id(scored[0][1])] = k; out.append(best); issues.append(f"No BOM row cites {_token(k)}; item {best['bom_item'] or '?'} was matched to {k} by its sizes only (a part drawn on another part's sheet is cited by that sheet's number, so this may be fine).")
         else: issues.append(f"No BOM row identifies {k}.")
     for f in out: f.pop('score', None)
     return dict(findings=out, issues=issues)

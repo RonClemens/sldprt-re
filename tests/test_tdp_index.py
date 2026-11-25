@@ -11,7 +11,7 @@ import make_test_drawing as G
 from pdf_drawing import _decode_cid
 import tdp_index as T
 
-assert _decode_cid('(cid:53)') == 'R' and _decode_cid('(cid:3)') == ' ' and _decode_cid('(cid:97)') == '~' and _decode_cid('(cid:200)') == '(cid:200)' and _decode_cid('(cid:2)') == '(cid:2)' and _decode_cid('A') == 'A', 'glyph index = code - 29'
+assert _decode_cid('(cid:53)') == 'R' and _decode_cid('(cid:3)') == ' ' and _decode_cid('(cid:97)') == '~' and _decode_cid('(cid:200)') == '(cid:200)' and _decode_cid('(cid:145)') == '\u00d8' and _decode_cid('(cid:131)') == '\u00b0' and _decode_cid('(cid:2)') == '(cid:2)' and _decode_cid('A') == 'A', 'glyph index = code - 29'
 pdf = os.path.join(tempfile.mkdtemp(), 'd.pdf'); G.write_pdf(G.build(), pdf)
 assert T.page_count(pdf) == 1
 r = T.index_page(pdf, 1)

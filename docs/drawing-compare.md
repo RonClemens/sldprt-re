@@ -92,7 +92,7 @@ dimensions are listed but fix nothing. It also lists dimensions that touch no co
 the stock the BOM lists (`PLATE`, `BAR`, ... rows with three sizes), whether BOM sizes match a CAD extent, and whether the BOM identifies the component unambiguously (two rows citing one part number, or a component no row cites).
 
 Tried on Hydro 27244607 (Standard configuration): of 21 component extents the sheet dimensions 1, locates 8 and leaves 12 undefined (the screws are not touched at all); the front and top views dimension 5 of 140 and 3 of 202 major coordinates. Block thickness 2.125 in does not fit the BOM stock
-`PLATE, 1 3/4" x 3 1/2"` (0.375 in over), and the PIN row cites the block's drawing number 27244630 while the pin component is 27244631. Both are findings to review against the component drawings, not conclusions: the BOM text was
+`PLATE, 1 3/4" x 3 1/2"` (0.375 in over), and the PIN row cites the block's drawing number 27244630 while the pin component is 27244631 (this turned out to be correct: the pin is drawn on the block's sheet, see the part-drawing section below). Both are findings to review against the component drawings, not conclusions: the BOM text was
 entered by hand from the sheet for this test, and the CAD thickness may include features the stock line does not describe. Works on bounding extents only (see the module docstring); `tests/test_determinacy.py` checks it on a synthetic assembly. A FreeCAD
 (conda-forge, headless) build of a solid from only the printed dimensions and BOM text gave the same picture: the six dimensions fix the width, the axis position and the overall height; every other extent had to be assumed.
 
@@ -110,3 +110,24 @@ reported in the page's warnings, and a dimension such as a diameter may then lac
 **Part drawings are not linked well yet.** Linking the block's detail drawing (page 40) to its CAD part (27244630) registered 2 views (one flagged ambiguous) and linked 2 of 15 dimensions, one of them a failing false link: the linker was built for assembly
 sheets. The mesh also lacks one face of the part (face 97, KeyError(1) in the part converter). The sheet prints 3 1/2" (twice) and 2 1/8", which are the CAD extents (3.5 x 3.5 x 2.125 in; I did not check which view each belongs to); the assembly sheet's BOM stock line `PLATE, 1 3/4" x 3 1/2"` does not match them. A feature-level comparison needs the part's
 planes and cylinders (hole axes), which the converter has but the mesh does not carry.
+
+### Part features, feature determinacy, and a part rebuilt from its drawing (`src/part_features.py`, `src/feature_determinacy.py`, `src/drawing_part.py`)
+
+**part_features.py** reads the exact faces of a part from the Parasolid body, not the mesh: planes (outward normal, offset), cylinders (axis, radius, hole or boss, axial range), cones (drill points, chamfers), with the face ids. The Hydro block (27244630) has 24 faces: 8 planes
+(one 45 degree chamfer), 12 cylinders (the 7/8 in bore through everything, a tapped hole in the side, four stepped holes 3/8 in for 1 3/8 in then 0.22 in, two 1/2 in corner radii) and the cone at the bottom of the tapped hole, which the mesh had dropped.
+
+**feature_determinacy.py** asks, for each quantity a drawing has to give (overall sizes, plane positions, hole axes, hole ends, diameters), whether a printed value on the sheet equals it. On page 40 of the Hydro package: 40 of 49 quantities are carried by a printed value
+(extents 3/3, positions 25/25, hole ends 9/9, diameters 3/12). The nine that are not: the diameters of the four stepped holes (0.375 and 0.22 in) and of the tapped hole (0.6875 in, a tap drill; the sheet gives the thread), which no readable text states. Matching is by value, not by
+what the dimension's arrows touch, so a coincidence is credited.
+
+**drawing_part.py** goes the other way: the drawing alone, to a part. It finds the plan view (the cluster of full circles), its outline, the elevation next to it, infers the scale from the printed dimensions, and measures overall size, corner radii, hole diameters, hole centres and
+the lengths of each hole step from the drawn linework. Each value is `stated` when a printed value equals it within 1/64 in (the printed value is then used) and `unconfirmed` otherwise: measured at the inferred scale from a sheet that says DO NOT SCALE. It can build the result in FreeCAD
+(`--freecad OUT.step --fcpython .../freecadcmd`) and compare it with the CAD part's feature list (`--cad PART.SLDPRT`). On the Hydro block: scale 72 pt/in (19 printed values match, runner-up score 6); 32 quantities compared with the CAD, none differ by more than 0.2 mm
+(the largest, 0.096 mm, is the fractional-inch rounding of the hole pattern, which the CAD has as 26 mm); 19 values stated, 13 unconfirmed, and the unconfirmed ones (the two hole diameters, the 0.75 in step, the 1/2 in corner radius) agree with the CAD to 0.005 mm. The FreeCAD solid
+has the right outline, 5 stacks of holes and the corner radii; it lacks what the plan and elevation do not show (the tapped hole in the side, the 1/4 in chamfer), about 5 to 8 thousand mm3 of the CAD volume.
+
+**What the sheet shows about the pin and the stock.** Page 40 is the detail drawing of two parts: the block (2.2.6.1, part 27244630) and the pin (2.2.6.2, part 27244631, 3/4 in round bar, 1 3/4 in long), so the assembly BOM's PIN row citing 27244630 is correct, and my earlier note that it might be a typo was wrong.
+The stock line printed on the sheet, `PLATE, 1 3/4" x 3 1/2" x 3 1/2"`, is thinner than the part's printed 2 1/8 in thickness: the same stock-versus-part mismatch as the assembly BOM; worth a look in the released drawing (a stock note left from an earlier revision is the usual cause).
+
+**Limits.** drawing_part handles prismatic parts drawn as a plan with round holes and an elevation next to it (above or below), with the scale one of 1/4 .. 4 times full size and at least 3 printed values matching; it does not read side or section views, threads, slots, chamfers or non-round pockets, and it gets the scale wrong
+(and says so with `scale_ambiguous`) when too few printed values match. The circle recogniser needs the circles as closed polylines or Bezier circles; text symbols (diameter, depth) in fonts that are not embedded stay undecoded except the two seen on this sheet.
