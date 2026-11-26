@@ -83,6 +83,7 @@ class Geo:
     def __init__(s):
         s.segs = []     # [x0, y0, x1, y1, width]
         s.arcs = []     # [cx, cy, r, bbox]
+        s.arc_w = []    # stroke width of each arc, parallel to arcs
         s.tris = []     # filled triangles: 3 points
         s.boxes = []    # axis-aligned rectangles [x0, y0, x1, y1]
         s.glyphs = []   # bounding boxes of small filled curve shapes (outlined text, parentheses)
@@ -103,7 +104,7 @@ def _add_path(geo, ops, fill, stroke, width):
             pts = np.vstack(curve_pts)
             fit = _fit_circle(pts[:: max(1, len(pts) // 24)])
             if fit and fit[2] > 0.5 and fit[3] < 0.02 * fit[2] + 0.05:
-                geo.arcs.append([fit[0], fit[1], fit[2], [float(pts[:, 0].min()), float(pts[:, 1].min()), float(pts[:, 0].max()), float(pts[:, 1].max())]])
+                geo.arcs.append([fit[0], fit[1], fit[2], [float(pts[:, 0].min()), float(pts[:, 1].min()), float(pts[:, 0].max()), float(pts[:, 1].max())]]); geo.arc_w.append(float(width))
             else:
                 for a, b in zip(pts, pts[1:]): geo.segs.append([a[0], a[1], b[0], b[1], width])
         curve_pts = []
@@ -135,12 +136,27 @@ def _add_path(geo, ops, fill, stroke, width):
         if len(xs) == 2 and len(ys) == 2: geo.boxes.append([xs[0], ys[0], xs[1], ys[1]])
 
 
+_CID = re.compile(r'^\(cid:(\d+)\)$')
+
+
+_SYMBOLS = {131: '\u00b0', 145: '\u00d8'}        # glyph indices seen in the Hydro package (page 40): '45(cid:131)' reads 45 degrees, '(cid:145) 3/4"' reads a diameter; assumed the same for the fonts of that package
+
+
+def _decode_cid(t):
+    """A font that is not embedded and has no ToUnicode map gives pdfminer `(cid:N)`; for the usual TrueType fonts (Arial, Times New Roman, Century Gothic ...) the code is the glyph index, which for printable ASCII is the
+    character code minus 29 (glyph 3 is the space). Other glyphs (symbols such as the diameter sign) are left as `(cid:N)` so the caller can see they were not decoded."""
+    m = _CID.match(t)
+    if m and 3 <= int(m.group(1)) <= 97: return chr(int(m.group(1)) + 29)
+    if m and int(m.group(1)) in _SYMBOLS: return _SYMBOLS[int(m.group(1))]
+    return t
+
+
 def _walk(obj, chars, geo):
     from pdfminer.layout import LTChar, LTLine, LTRect, LTCurve
     if isinstance(obj, LTChar):
         a, b, _, _, e, f = obj.matrix; rot = int(round(math.degrees(math.atan2(b, a)))) % 360
         size = obj.height if rot in (0, 180) else obj.width
-        chars.append(dict(c=obj.get_text(), x=e, y=f, adv=obj.adv, size=size, rot=rot, bbox=list(obj.bbox)))
+        txt = obj.get_text(); chars.append(dict(c=_decode_cid(txt), dec=txt != _decode_cid(txt), x=e, y=f, adv=obj.adv, size=size, rot=rot, bbox=list(obj.bbox)))
         return
     if isinstance(obj, (LTLine, LTRect, LTCurve)):
         ops = getattr(obj, 'original_path', None)
@@ -211,7 +227,9 @@ def read_pdf(path, pages=None, keep_lines=False):
         chars = []; geo = Geo()
         _walk(page, chars, geo)
         sheet = Sheet(index=pi, size_pt=[round(page.width, 2), round(page.height, 2)])
-        runs = _runs_from_chars(chars)
+        runs = _runs_from_chars(chars); ndec = sum(1 for c in chars if c.get('dec')); nbad = sum(1 for c in chars if c['c'].startswith('(cid:'))
+        if ndec: sheet.warnings.append(f'text decoded from glyph indices ({ndec} characters; the font is not embedded)')
+        if nbad: sheet.warnings.append(f'{nbad} characters could not be decoded (symbols of a font that is not embedded)')
         if not runs: sheet.warnings.append('no text on this page (raster or outlined text: needs OCR)')
         _read_sheet(sheet, runs, geo, keep_lines=keep_lines)
         drawing.sheets.append(sheet)

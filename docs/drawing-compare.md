@@ -73,14 +73,168 @@ from `sldasm2glb`, so a part that failed to tessellate looks like a missing feat
 
 ### Annotated glTF (`src/drawing_gltf.py`)
 
-`python3 src/drawing_link.py DRAWING.pdf PAGE MODEL.glb --glb OUT.glb` writes the CAD mesh unchanged plus one `DIM <id>` node per linear dimension: a LINES primitive on the plane in front of the model in that dimension's view,
-green for pass, red for fail, orange for unlinked, grey for reference / no tolerance (KHR_materials_unlit). Each node's `extras` carries the text, printed and measured values, deviation, tolerance used, status and the reason when unlinked;
-the scene's `extras.drawing_link` carries the source, the general tolerance, the status counts and the per-view registration. Checked by loading the Hydro 27244607 result in Three.js in headless Chromium (8 triangle meshes, 6 dimension
-line nodes with extras). Not done: text labels in the 3D scene (glTF has no text; a viewer would draw them from `extras`), and a toggle for the layer in ipb_viz.
+`python3 src/drawing_link.py DRAWING.pdf PAGE MODEL.glb --glb OUT.glb` writes the CAD mesh unchanged plus one `DIM <id>` node per linear dimension, drawn in the plane of its view just in front of the model: a LINES primitive
+(extension lines that start at the real model vertices the dimension spans, the dimension line, an arrowhead at each end) and a TRIANGLES primitive holding the label as stroke-font geometry (`4 21/32" = 4.66 IN`, reference
+dimensions in parentheses, `?` when unlinked), written as two single-sided copies so it reads correctly from either side. Colours: green pass, red fail, orange unlinked, grey reference / no tolerance (KHR_materials_unlit).
+Each node's `extras` carries the text, printed and measured values, deviation, tolerance used, status and the reason when unlinked; the scene's `extras.drawing_link` carries the source, the general tolerance, the status counts, the
+per-view registration and `vector_labels: true`.
 
-## Verification
+An earlier version wrote one two-point line per dimension, far outside the model and with no label; in a geometry-only viewer (the Babylon.js sandbox) that looked like a few stray lines. Checked now by loading the Hydro
+27244607 result in Babylon.js and Three.js in headless Chromium, looking straight at each label plane from both sides: lines meet the model, arrowheads and labels are present, labels read left to right (or upwards along a vertical line)
+and upright. A viewer that does not know the layer shows it as ordinary lines and meshes; the ipb_viz layer (PR in that repo) adds a toggle and a panel.
 
-`tests/test_pdf_drawing.py` generates a synthetic drawing (`tools/make_test_drawing.py`, an invented 100 x 60 x 10 plate with a deliberately wrong dimension) and checks every
-dimension, view, datum, GD&T frame and note against the generator's ground truth. **The reader has not yet been run on a real SolidWorks PDF export.** On the public Hydro
-drawing PDFs (ipb_viz-generated envelope sheets with no dimensions) it reports 0 dimensions on 210 pages (no false positives) and reads the sheet scales.
-No drawing data is committed: test PDFs are generated at test time.
+### Determinacy report (`src/determinacy.py`)
+
+`python3 src/drawing_link.py DRAWING.pdf PAGE MODEL.glb --json > results.json` then `python3 src/determinacy.py results.json MODEL.glb [--bom BOM.csv] [--md OUT.md] [--json OUT.json]` answers a different question from the link:
+not "does the drawing agree with the CAD" but "what does the sheet actually define of the model". For each component (the children of the assembly root) and each model axis it classifies the extent as **dimensioned**
+(a dimension spans it, or dimensions reference both end faces), **located** (one face or the centre is referenced, the size is not) or **undefined** (nothing on the sheet touches it: a model built from the sheet alone must assume it). Reference
+dimensions are listed but fix nothing. It also lists dimensions that touch no component face (they refer to features inside a component), the per-view coverage of major coordinates, and, with a BOM table as CSV, whether each component fits
+the stock the BOM lists (`PLATE`, `BAR`, ... rows with three sizes), whether BOM sizes match a CAD extent, and whether the BOM identifies the component unambiguously (two rows citing one part number, or a component no row cites).
+
+Tried on Hydro 27244607 (Standard configuration): of 21 component extents the sheet dimensions 1, locates 8 and leaves 12 undefined (the screws are not touched at all); the front and top views dimension 5 of 140 and 3 of 202 major coordinates. Block thickness 2.125 in does not fit the BOM stock
+`PLATE, 1 3/4" x 3 1/2"` (0.375 in over), and the PIN row cites the block's drawing number 27244630 while the pin component is 27244631 (this turned out to be correct: the pin is drawn on the block's sheet, see the part-drawing section below). Both are findings to review against the component drawings, not conclusions: the BOM text was
+entered by hand from the sheet for this test, and the CAD thickness may include features the stock line does not describe. Works on bounding extents only (see the module docstring); `tests/test_determinacy.py` checks it on a synthetic assembly. A FreeCAD
+(conda-forge, headless) build of a solid from only the printed dimensions and BOM text gave the same picture: the six dimensions fix the width, the axis position and the overall height; every other extent had to be assumed.
+
+### Package index and glyph-index text (`src/tdp_index.py`, `pdf_drawing._decode_cid`)
+
+`python3 src/tdp_index.py PACKAGE.pdf OUT.json [--md OUT.md] [--pages 1-40] [--workers 4]` reads every page of a drawing package once and classifies it (assembly, detail-part, layout-no-dims, schematic-or-wiring, piping, list-or-cover, other, unreadable) with the
+evidence for the class, the counts the dimension reader finds, the SEE DWG references, a drawing-number guess from the title block, and `link_ready`. The classes are heuristics for sorting a package. On the 151-page Hydro package (2.3 minutes with 4 workers): 35 assembly,
+48 detail-part, 36 layout-no-dims, 12 schematic-or-wiring, 4 piping, 2 list-or-cover, 12 other, 2 unreadable; 1246 dimensions read; 61 pages link-ready. The drawing-number guess agrees with the independent index in ipb_viz (`tools/index-tdp.py`) on 111 of 151 pages: use that index
+for the number and keep this one for what the reader can do with each page.
+
+**Fonts that are not embedded.** 42 of the 151 pages use Arial / Times New Roman / Century Gothic without embedding them or a ToUnicode map, so pdfminer returned `(cid:N)` and the readers saw nonsense (page 40, the block's detail drawing, gave 2 dimensions). For these TrueType fonts
+the code is the glyph index, and for printable ASCII that is the character code minus 29, which `_decode_cid` applies; page 40 then reads 15 dimensions in 3 views. Symbols (the diameter sign, counterbore, degree) have other glyph indices that are not decoded: 40 pages still have some,
+reported in the page's warnings, and a dimension such as a diameter may then lack its symbol.
+
+**Part drawings are not linked well yet.** Linking the block's detail drawing (page 40) to its CAD part (27244630) registered 2 views (one flagged ambiguous) and linked 2 of 15 dimensions, one of them a failing false link: the linker was built for assembly
+sheets. The mesh also lacks one face of the part (face 97, KeyError(1) in the part converter). The sheet prints 3 1/2" (twice) and 2 1/8", which are the CAD extents (3.5 x 3.5 x 2.125 in; I did not check which view each belongs to); the assembly sheet's BOM stock line `PLATE, 1 3/4" x 3 1/2"` does not match them. A feature-level comparison needs the part's
+planes and cylinders (hole axes), which the converter has but the mesh does not carry.
+
+### Part features, feature determinacy, and a part rebuilt from its drawing (`src/part_features.py`, `src/feature_determinacy.py`, `src/drawing_part.py`)
+
+**part_features.py** reads the exact faces of a part from the Parasolid body, not the mesh: planes (outward normal, offset), cylinders (axis, radius, hole or boss, axial range), cones (drill points, chamfers), with the face ids. The Hydro block (27244630) has 24 faces: 8 planes
+(one 45 degree chamfer), 12 cylinders (the 7/8 in bore through everything, a tapped hole in the side, four stepped holes 3/8 in for 1 3/8 in then 0.22 in, two 1/2 in corner radii) and the cone at the bottom of the tapped hole, which the mesh had dropped.
+
+**feature_determinacy.py** asks, for each quantity a drawing has to give (overall sizes, plane positions, hole axes, hole ends, diameters), whether a printed value on the sheet equals it. On page 40 of the Hydro package: 40 of 49 quantities are carried by a printed value
+(extents 3/3, positions 25/25, hole ends 9/9, diameters 3/12). The nine that are not: the diameters of the four stepped holes (0.375 and 0.22 in) and of the tapped hole (0.6875 in, a tap drill; the sheet gives the thread), which no readable text states. Matching is by value, not by
+what the dimension's arrows touch, so a coincidence is credited.
+
+**drawing_part.py** goes the other way: the drawing alone, to a part. It finds the plan view (the cluster of full circles), its outline, the elevation next to it, infers the scale from the printed dimensions, and measures overall size, corner radii, hole diameters, hole centres and
+the lengths of each hole step from the drawn linework. Each value is `stated` when a printed value equals it within 1/64 in (the printed value is then used) and `unconfirmed` otherwise: measured at the inferred scale from a sheet that says DO NOT SCALE. It can build the result in FreeCAD
+(`--freecad OUT.step --fcpython .../freecadcmd`) and compare it with the CAD part's feature list (`--cad PART.SLDPRT`). On the Hydro block: scale 72 pt/in (19 printed values match, runner-up score 6); 32 quantities compared with the CAD, none differ by more than 0.2 mm
+(the largest, 0.096 mm, is the fractional-inch rounding of the hole pattern, which the CAD has as 26 mm); 19 values stated, 13 unconfirmed, and the unconfirmed ones (the two hole diameters, the 0.75 in step, the 1/2 in corner radius) agree with the CAD to 0.005 mm. The FreeCAD solid
+has the right outline, 5 stacks of holes and the corner radii; it lacks what the plan and elevation do not show (the tapped hole in the side, the 1/4 in chamfer), about 5 to 8 thousand mm3 of the CAD volume.
+
+**What the sheet shows about the pin and the stock.** Page 40 is the detail drawing of two parts: the block (2.2.6.1, part 27244630) and the pin (2.2.6.2, part 27244631, 3/4 in round bar, 1 3/4 in long), so the assembly BOM's PIN row citing 27244630 is correct, and my earlier note that it might be a typo was wrong.
+The stock line printed on the sheet, `PLATE, 1 3/4" x 3 1/2" x 3 1/2"`, is thinner than the part's printed 2 1/8 in thickness: the same stock-versus-part mismatch as the assembly BOM; worth a look in the released drawing (a stock note left from an earlier revision is the usual cause).
+
+**Limits.** drawing_part handles prismatic parts drawn as a plan with round holes and an elevation next to it (above or below), with the scale one of 1/4 .. 4 times full size and at least 3 printed values matching; it does not read side or section views, threads, slots, chamfers or non-round pockets, and it gets the scale wrong
+(and says so with `scale_ambiguous`) when too few printed values match. The circle recogniser needs the circles as closed polylines or Bezier circles; text symbols (diameter, depth) in fonts that are not embedded stay undecoded except the two seen on this sheet.
+
+**Survey of the 48 detail-part pages of the Hydro package (`tools/tdp_rebuild_survey.py`).** 28 pages gave measurements, 19 had no plan view (fewer than two full circles: no round holes, or circles drawn another way), 1 timed out. Only one rebuild is verified correct: page 40, the block. Of the 11 pages whose drawing number
+matches a CAD file and so could be compared, 10 differ from the CAD by a large amount; the causes seen are a plan outline that is the sheet border or a whole weldment (8 pages in all have an outline spanning the sheet), a scale that is a different power of two than the real one (17 of 28 pages first reported an ambiguous scale; 11 still do after circle diameters were added to the
+evidence), and parts that are not simple prismatic blocks (the classifier's detail-part class includes weldments and frames drawn with many dimensions and no BOM). Page 39 is Rev 02 of the block and differs from the CAD by hole positions: the CAD is the Rev 03 model, whose revision notes mention opened and removed holes, so a revision difference is the likely cause, not verified.
+Take the tool as validated on one prismatic part with a plan view and an elevation, and as a measurement aid, not a general drawing-to-part converter.
+
+**Second pass over the same 48 pages** (scale from the nearest `SCALE a : b` label when the printed values agree with it about as well as with the best inferred scale; the sheet border and the title block removed before clustering; a cluster that is the circles alone, or an outline over 60 percent of the sheet, refused).
+Fewer pages give a measurement and the refusals say why: 12 measured, 16 without a plan view (fewer than two full circles), 15 whose circles have no outline around them, 4 whose outline spans the sheet, 1 timeout. Page 40 is still the only verified rebuild; the 6 comparisons with a CAD file of the same drawing number that
+disagree are not trustworthy checks either way, because those numbers belong to weldments and assemblies in the CAD, not to a block like the one measured. The remaining measured pages (27244644, 27244646, 27244600 sheets) have no CAD part to compare with. So the tool now refuses more and is wrong less often, but what it has proven is one part.
+
+### Zones, and a drawing with no CAD part rebuilt zone by zone (`src/sheet_zones.py`, `tools/tdp_zone_survey.py`, `tools/rebuild_stop_bracket.py`)
+
+`python3 src/sheet_zones.py DRAWING.pdf PAGE [--json OUT.json] [--crops DIR --dpi 200]` reads the sheet's zone border (the letters and numbers in the margins), names every zone as on the sheet (F8, C3, A1 ...), finds the views (clusters of object linework) and writes each as the zone range it spans (F8-D7;
+B2+C1+C2 when the zones do not form a rectangle), assigns each dimension to its nearest view, picks up the view titles, `SCALE a : b` labels and the tables (title block, revision table, BOM, notes), classes every zone (view, title block, BOM table, revision table, notes block, dimensions only, text only, empty) and renders a crop of each view region and table at the
+dpi given, so a slot callout or a dimension chain can be looked at one zone group at a time. On a sheet with no readable zone labels it gives one zone `*`.
+
+Over the 151-page Hydro package (`tools/tdp_zone_survey.py`): 84 pages have a zone border (30 as 8 x 6, 39 as 4 x 4, 10 as 8 x 3, a few other grids), 65 have none (the electrical cabinet sheets 46 to 86 and others have no labels), 2 pages (2 and 52) exceed the 240 s limit because their linework has thousands of segments.
+854 views were found, of which a good share are fragments of one real view (a view is a cluster of object-width lines within 8 pt of each other, so hidden-line or section fragments can split); 136 zones are title block, 55 revision table, 84 notes block, 123 dimensions only. Only 7 pages were recognised as having a BOM table (the detection wants ITEM, QTY and similar words as single notes).
+It is a sorting aid, with the per-page rows in the survey JSON.
+
+**Worked example: STOP BRACKET (27244633, page 41).** (An earlier version of this section said the CAD package has no part for it; it does, `27244633.SLDPRT`, and the rebuild is compared with it below.) The sheet is an 8 x 6 zone grid; the zones give six views: V1 F8-D7 (the upright seen from outside), V2 F6-D5 (the side with the gusset), V3 F3-D2 (isometric), V4 and V5 (the gusset, 1:2), V6 C6-B5 (the base from above). `tools/rebuild_stop_bracket.py` measures the circles and slots in V1 and V6, takes each view's scale from the printed overall size
+(54 pt per inch, 3:4), checks every position against the printed dimensions of its own view, and builds the angle, four slots, two holes and the gusset in FreeCAD. All 20 printed dimensions were read; every hole and slot position is stated (the printed chain values are used); the hole (5/16 in) and slot (17/32 in) diameters are unconfirmed measurements (the callout fractions after the diameter symbol are not in the text the reader recovers, and agree with the measurement in the crops);
+the way the views relate (which view shows what, which edge the chains start from, the gusset standing against the upright's inner face) is my reading of the sheet and is written in the script. Independent check: the solid's volume (24.93 in3) at the density of ASTM A36 steel (0.2836 lb/in3) is 7.07 lb, against the 7.04 lb printed on the sheet (+0.4 percent). The same check on the Hydro block gives 6.60 lb for the CAD part
+(6.64 printed) and 6.75 lb for the part measured from the drawing (which lacks the side hole and the chamfer). Not modelled: the rounded outer corners and inner radius of the angle, weld fillets, the thread. The mirror of the member (which end the "right edge" of the views is) is not determined by the sheet.
+
+### Building blocks per view and zone (`src/view_features.py`, `sheet_zones.blocks_markdown`)
+
+Each view is now classified in the terms a 3D model is built from, and the zones aggregate them. `python3 src/sheet_zones.py DRAWING.pdf PAGE --md OUT.md [--projection third|first] [--unit inch|mm]` writes, per view: its role (front, top, bottom, right or left side, auxiliary, detail or section, isometric), the part axes across and up the page
+(front X/Y, top and bottom X/Z, sides Z/Y), the scale (the `SCALE a : b` label when the printed values agree with it, else inferred, else shared with the aligned view, else assumed full size and flagged), each dimension's direction (from its arrow tips, else by which line spacings its value equals) mapped to a part axis, the holes
+(through, blind with depth, counterbored with both diameters and step lengths, countersunk with countersink diameter, tapped with the thread callout, slots), fillet radii (arcs and rounded outline corners, with the count), chamfers (straight cuts at corners, callouts), and for each zone the roles, dimension counts by axis, hole types, fillet radii and slots in it.
+The roles come from the layout under the third-angle (ASME) assumption, which the run states; the sheet's own projection symbol is a drawing, not text. When two views are aligned and neither has more neighbours, the one with fewer circles is the front view (the hole axes square to a view belong to the top, bottom and side views).
+
+Hydro block (page 40): V1 (F6-E5) front at 72 pt per inch with the tapped side hole (3/4-16 UNF, depth 0.75 to the cone, drill 0.6875); V4 (D6-D5) the bottom view with a 0.875 through bore (depth 2.125, THRU ALL callout), four counterbored holes (0.375 for 1.375, then 0.22 for 0.75) and 0.5 in fillets on two corners; the isometric and pin views flagged as such;
+this is the inventory the rebuild of the block needs. STOP BRACKET (page 41): V1 the left side (Z/Y) with two 0.313 holes (one tapped 3/8-16 UNC THRU, 0.5 deep = through the upright), V2 the front, V6 the bottom view with four slots (0.5315 wide, 0.7167 between centres), V5 the gusset at 1:2 with its 1/2 x 45 chamfer and 1/4, 3, 6, 1/2 dimensions.
+Limits: a hole whose profile is in no aligned view stays `unknown depth`; a callout shared by several holes ("2 x ... THRU") is attached to the nearest only; a fillet drawn as a chain of short segments joined to the outline is found only at the corners of a view's box (not at an interior corner); a one-view sheet or a sheet with no dimensions has its scale assumed.
+
+**Survey of the building blocks over the 151 Hydro pages** (before the fillet filter below; hole and view numbers stand). 854 views: front 119, top 80, bottom 65, left side 55, right side 53, auxiliary 89, detail or section 194, isometric 199 (the top / bottom split follows the third-angle assumption). Holes: 434 with no profile in an aligned view (`unknown depth`), 109 blind, 81 through,
+39 stepped (counterbore or countersink not told apart), 27 counterbored, 8 tapped, 7 countersunk; 72 slots, 65 chamfer items; dimension directions 379 horizontal, 272 vertical, 119 either, 137 unmatched. The fillet radii in that run were dominated by tiny arcs (glyph shapes, centre marks, arrowheads: hundreds of radii under 0.1 in); the code now keeps only object-width arcs of at least
+1/16 in and rounded outline corners of at least that size, which on pages 40 and 41 gives the real corner radii (0.5 in on the block; the gusset's 1/2 x 45 corner is a chamfer, not a fillet) and nothing spurious on the pages checked. The survey was not rerun after the filter.
+
+**Rebuild against the actual CAD part (27244633.SLDPRT).** The part converts (37 faces: the angle, 4 slots, 2 upright holes, the gusset with its 45 degree chamfer and slanted edge). `tools/rebuild_stop_bracket.py ... --cad PART.SLDPRT` compares the rebuild with the CAD part's exact features: member length 3.5, upright 8, base 6 in agree to 0.001 in; the four slots agree
+in width (0.5315 against 0.5312) and length between centres (0.7188 both) and in position across the member; along the base the rebuild, which uses the printed 2 3/8 and 1 21/32 and 4 7/8 and 4 5/32, is 0.0154 in (1/64) from the CAD (4.5156 and 2.0156 against 4.5002 and 2.0002), while the value measured from the drawn linework is exact: the printed fractions are rounded to 1/32 in.
+The two upright holes (5/16 in, at 4.25 and 6.75 in, 1 in each side of the middle) and the gusset thickness agree exactly. **One error found by this comparison, in my first version:** I had read the 1 5/8 in dimension in the upright view as the distance to the gusset's centre plus the 3/4 in, which put the gusset 2 3/8 in from the edge; the CAD has it centred (1 3/4 in from either edge), and the two vertical lines of the gusset strip in the view,
+1 5/8 and 1 7/8 in from the edge, say the same. The script now measures the strip and uses the printed 1 5/8 to its near face. The weight check (7.07 lb against 7.04 printed) could not catch this, since it does not depend on where the gusset stands. The CAD mesh's own volume (19.6 in3, 5.5 lb) is below that of the angle alone (about 22 in3 after the slots), so the mesh volume of this part is not usable for a weight check (the exact volume would come from the body, which this converter does not integrate).
+
+**Zone refinements.** Sheets with no zone labels now get a virtual grid with the zone size of the labelled sheets of the package (about 198 x 204 pt), flagged `virtual` in the result and the report, numbered right to left and lettered top down; the Hydro electrical-cabinet sheets (63 pages with no labels) are classified zone by zone this way. Small clusters beside a much bigger one are merged into it, lone object-width circles
+and marks under 20 pt are not views, and the item balloons (thin circles with a number, outside every view) are listed per zone as `callout_balloons`. On the pages checked the number of views did not change (the earlier splits were mostly real separate views: details, isometrics, sections), so the count of 854 views stands as a count of views and detail views.
+
+**Page 121 (27244681, the chain guide channel), the one prismatic drawing of the package with no CAD file at all, was not rebuilt.** The sheet's text decodes (same glyph-index fonts), but its dimensions come out as `158` and `7` millimetres: the dimension text is in a form the dimension reader does not parse (fractions and inch marks in separate runs close together). That is the next fix before the channel (a 5 in C-section, 66 3/4 in long with three holes and a countersink detail)
+can be read; the other CAD-less pages (27244674, the electrical installation) are assemblies of conduit, not parts.
+
+### Rebuild from the building blocks (`src/rebuild_from_blocks.py`)
+
+`python3 src/rebuild_from_blocks.py DRAWING.pdf PAGE OUT_DIR --fcpython .../freecadcmd [--cad PART.SLDPRT] [--projection third|first] [--unit inch|mm]` turns a page's building blocks (view roles, scales, holes, slots, silhouettes) into a FreeCAD solid, with a status for every value, and with `--cad` compares it with the CAD part.
+
+How the solid is made: the object linework of each view (front, top or bottom, side) is rasterised, closed and traced into a silhouette polygon, so rounded corners, chamfers and an angle's L-profile are in it; the solid is the **visual hull**, the intersection of the silhouettes each extended along its viewing direction (front: X across, Y up; the depth Z from the front face; third-angle layout unless told otherwise).
+A plate standing in the inside corner of an angle (the front outline has a diagonal edge between two legs; two lines a plate's thickness apart in a side or plan view) is taken out of the profile and put back over its own span. Holes, stepped holes and slots are cut from the circles and stadium outlines to the depths the neighbouring view shows, from the face the view looks at (near) or from the opposite face (far); no depth found means through, and says so.
+When the sheet has no inch marks the unit is chosen by which reading the drawn linework supports (`unit_guess`). The views must agree on the sizes they share (front and top widths, front and side heights, top and side depths, within 3 percent); if not, the result says the solid is not trustworthy and why.
+
+**Status of every value** (provenance.json, report.md): `stated` when a printed dimension equals it within one drawn point or 1/64 in; `unconfirmed` for everything measured from the linework, assumed (through, near or far face) or inferred (silhouette, visual hull, rib), each saying which. The report ends with what the views do not show: pockets, ribs not recognised, cavities, hole threads, edge breaks, material.
+
+**How close, against the CAD parts that generated the drawings** (CAD side tested by ray parity on its mesh; the mapping of axes between the frames is searched, not known):
+
+| drawing / part | views used | extents | holes | volume overlap (IoU) |
+|---|---|---|---|---|
+| 27244630 block (page 40) | front, bottom, right side | 3.5 x 2.125 x 3.5 in, exact | 10 of 10 cuts match a CAD hole, 0.001 in | 0.983 (the cone of the tapped hole, a 1/4 in chamfer and the rounded corner approximation) |
+| 27244633 STOP BRACKET (page 41) | left side, front, bottom | 6 x 8 x 3.5 in, exact | 10 of 10 match (8 slot ends, 2 upright holes); the angle's inside corner radius (the 11th CAD "hole") is not recovered | 0.984 with the gusset recognised (0.42 without: the visual hull fills the whole corner with a full-width plate) |
+| 27244643 chain anchor (page 45) | top, left side, front | 6.75 x 1.5 x 3.25 in, exact | 5 of 5, 0.001 in | 0.998 (after the unit was chosen as inch: read as millimetres the scale came out four times too big) |
+
+Pages where it refuses, with the reason in the report: 27244626 (page 34), 27244612 (pages 28 and 29): the views disagree on the sizes they share (a plate drawn with details at other scales, a long member shown with break lines, a sheet with several parts); an earlier version built a wrong solid or an empty one for these, and the consistency check is what now stops it. Measured values on the three parts that worked are exact to about 0.001 in, better than the printed fractions (a 1/32 in rounding of a metric hole pattern shows as 0.0154 in).
+Limits: prismatic parts with holes, slots, rounded corners, chamfers and the corner plate; pockets (a blind rectangular recess), ribs other than the gusset case, revolved parts, hole threads, cones at hole bottoms, inside fillets hidden by a plate; three views (two give a looser hull); the layout's projection must be right (the flag is `--projection`).
+
+### Repeatability: the same pipeline on the bicycle (`tools/make_drawing_from_glb.py`, `tools/glb_rebuild_trial.py`)
+
+The bicycle of the ipb_viz examples (`tools/examples/bike`, 20 distinct parts) is an invented model with a GLB and a BOM only: **there are no 2D drawings of it and no CAD files**. To test the pipeline on other geometry, `make_drawing_from_glb.py` draws each part as a three-view vector PDF (front, top above, right side beside: third-angle) from the mesh's feature edges and silhouette edges, with three overall dimensions and a SCALE label, and `glb_rebuild_trial.py` runs the rebuild from each drawing and compares the solid with the part's mesh.
+These drawings are made by a script from the mesh, so they are cleaner than real ones (no printed dimensions of features, views always consistent) and the rebuilt solid is compared with the very mesh the drawing came from: this tests whether the code runs on other geometry and where its model of a part (a visual hull plus holes) stops fitting, not how it copes with drawings made by people.
+
+Result (the same code as for the Hydro parts, nothing tuned per part): 17 of 20 parts rebuilt, all with the overall sizes right to 0.2 mm; 3 refused (a rim and a chain and a handlebar whose views the zone reader did not recognise as a layout). Volume overlap with the mesh: 1.0 for the box-like parts (cassette, pedal, brake lever, saddle), 0.98 seat clamp, 0.94 grip, 0.92 screw, 0.78 stem, 0.76 seatpost, 0.64 hubs, 0.57 crankset, 0.53 fork, 0.17 the welded frame, and about 0 for the rims, tyre and spoke set (rings and thin spokes: a silhouette hull fills a ring; a ring's hollow shows in the views as circles that become a through hole only when they are round holes in a plate).
+Two defects in the generalisation were found and fixed by this trial: the object line width was only estimated from circles (with none, dimension lines were taken for object lines and the views grew by the dimension offset; it is now the heaviest stroke width that carries 10 percent of the drawn length), and a view whose lines are not axis aligned (the end of a round part) was taken for an isometric view (a view that shares its extent exactly with an aligned view is now orthographic). The Hydro rebuilds are unchanged by both.
+What it shows about repeatability: the layout reading, scale, silhouettes and hull work unchanged on a different kind of part; parts with revolved, hollow or tubular geometry are outside what a three-silhouette hull can recover and need either section views (not read yet) or the BOM's own description (a "Tyre, 700x32C" is a torus) to be rebuilt correctly.
+
+## Other drawings with no CAD behind them: the ipb_viz demo sheets
+
+`demo-bracket-drawing.pdf` and `demo-assembly-drawing.pdf` (ipb_viz `tools/examples`) are synthetic sheets of plain rectangles with bare-number text and no dimension lines. What the tools needed to read them:
+
+- the object-line width is chosen by trying candidate stroke widths and rejecting clusters that look like the title block (these sheets have heavier title-block lines than object lines);
+- scale from bare numbers beside the views (`100`, `60` read as millimetres), flagged unconfirmed;
+- nested rectangles that a front, a top / bottom and a side view agree on become component boxes (`components` in the spec, each listed as an unconfirmed inferred box: one part or several is not shown); they replace the visual hull only when their union reproduces every silhouette (IoU 0.9, line widths blur edges);
+- a view titled `DETAIL A`, `SECTION B` or `VIEW C` is a detail at its own scale and is excluded from roles and from scale sharing.
+
+Results: the demo bracket rebuilds with volume IoU 1.0 against its GLB (0.823 with the hull alone, which fills the notch between wall and boss). The demo assembly runs but does not match its GLB: the sheet has only two principal views (which of the two is the front rests on the fewest-circles rule and is flagged unconfirmed), no dimensions or scale for the principal views (72 pt/in assumed), and its proportions are not those of the GLB, so it is a schematic rather than a projection of that model. The pipeline does not split an assembly into its components beyond the box detection above. The arm Pack-and-Go PDFs are 1 KB placeholders with no geometry.
+
+## Assembly scale from confirmed detail-part sizes (first trial, Hydro package)
+
+`src/assembly_scale.py` (runner `tools/assembly_scale_run.py`, reference sizes from `tools/part_reference_sizes.py`): the parts list row `SEE DWG nnnnnnnn` links an item to its detail drawing; the item balloon (circle with the item number, leader to the part) locates it on a view; the drawn lengths near the leader end are divided by the part's *stated* overall sizes and the scale most parts agree on wins. Reference sizes: 8 of the 15 Hydro detail parts have at least one stated overall size.
+
+Result against the printed sheet scale (pt per inch = 72 a / b for `SCALE a:b`):
+
+| page | printed | estimate | parts | verdict |
+|---|---|---|---|---|
+| 5 (27244603) | 1:4 (18) | 17.0 (1:4.23) | 1 | 5.5% low |
+| 4 (27244602) | 3:16 (13.5) | 12.9 (1:5.58) | 1 | 4.5% low |
+| 3 (27244601) | 1:5 (14.4) | 2.86 (1:25) | 2 | wrong: two coincidental matches |
+| 6, 11, 12 | | none | | no confirmed size found near a balloon |
+| 7 (no label) | | 4.04 | 1 drawing, 3 items | cannot be checked |
+
+At the printed scale no confirmed size has a matching drawn length within 3% on pages 4 and 5, so the single-part estimates are about 5% low for a reason not yet understood (the length taken is probably not the part's overall extent). Conclusion: with one confirmed size per part and linework that merges parts, this is a weak check, not an estimator; it needs several parts per sheet, a way to isolate a part's own linework, and sections from parts with stated sizes on more axes. Every result is `unconfirmed (inferred)`.

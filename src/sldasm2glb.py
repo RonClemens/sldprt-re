@@ -22,16 +22,21 @@ def parse_tree(xml_bytes):
                 suppressed=r.get('swSuppressed')=='YES',hidden=r.get('swHidden')=='YES',model=r.get('swModelRef'),
                 T=np.array([float(x) for x in r.get('swTransform').split()]).reshape(4,4)))
         bb=m.get('swBoundingBox')
-        models[m.get('id')]=dict(id=m.get('id'),name=m.get('swName'),cfg=m.get('swConfigurationName'),file=files.get(m.get('swFileRef')),
+        models[m.get('id')]=dict(id=m.get('id'),name=m.get('swName'),cfg=m.get('swConfigurationName'),cfgid=int(m.get('swConfigurationId') or 0),file=files.get(m.get('swFileRef')),
                                  refs=refs,bbox=[float(x) for x in bb.split()] if bb else None)
     # the document itself = the swFile with swDocType ASSEMBLY that has a path ending like our input; pick model whose file is that assembly
     return files,models,root
-def flatten_instances(models,root_id):
-    """all part instances (including suppressed / hidden, flagged) with world 4x4 (row-vector convention)"""
+def flatten_instances(models,root_id,deltas=None):
+    """all part instances (including suppressed / hidden, flagged) with world 4x4 (row-vector convention).
+    deltas(file, config_id) -> {"<name>-<n>": (dx, dy, dz)}: components that sit elsewhere in that configuration than in the saved tree (see config_placements.py); the offset is in the parent's frame"""
     out=[]
     def rec(mid,W,path,flags):
+        dd=deltas(models[mid]['file'],models[mid].get('cfgid',0)) if deltas and models[mid].get('cfgid',0) else {}
         for r in models[mid]['refs']:
-            ch=models[r['model']]; M=r['T']@W; nm=f"{r['name']}<{r['num']}>"
+            T=r['T']
+            d=dd.get(f"{r['name']}-{r['num']}")
+            if d is not None: Tr=np.eye(4); Tr[3,:3]=d; T=T@Tr
+            ch=models[r['model']]; M=T@W; nm=f"{r['name']}<{r['num']}>"
             fl=dict(suppressed=flags['suppressed'] or r['suppressed'],hidden=flags['hidden'] or r['hidden'])
             p=path+[nm]
             if ch['file'].upper().endswith('.SLDPRT'): out.append(dict(path='/'.join(p),part=ch['file'].rsplit('.',1)[0],M=M,cfg=r['cfg'],**fl))
@@ -47,13 +52,14 @@ def find_root(models,sldasm_name):
     c=[m for m in models.values() if m['file'] and m['file'].lower()==me and m['refs']]
     return c[0] if c else max(models.values(),key=lambda m:len(m['refs']))
 def main():
-    ap=argparse.ArgumentParser(); ap.add_argument('sldasm'); ap.add_argument('--schema',required=True); ap.add_argument('-o','--out',default='out'); ap.add_argument('--include-hidden',action='store_true')
+    ap=argparse.ArgumentParser(); ap.add_argument('sldasm'); ap.add_argument('--schema',required=True); ap.add_argument('-o','--out',default='out'); ap.add_argument('--include-hidden',action='store_true'); ap.add_argument('--config',help='assembly configuration to build (default: the first one in the component tree, usually Default). The tree stores one set of placements; components that sit elsewhere in another configuration are moved from the binary Config-<n> stream (config_placements.py)')
     a=ap.parse_args(); os.makedirs(a.out,exist_ok=True); folder=os.path.dirname(os.path.abspath(a.sldasm))
     st=read_streams(a.sldasm)
     if 'swXmlContents/COMPINSTANCETREE' not in st: sys.exit('no COMPINSTANCETREE stream (older OLE2 SolidWorks file?)')
     files,models,_=parse_tree(st['swXmlContents/COMPINSTANCETREE'])
     me=os.path.basename(a.sldasm).lower()
-    root=[m for m in models.values() if m['file'] and m['file'].lower()==me and m['cfg']==models.get(m['id'])['cfg'] and m['refs']]
+    root=[m for m in models.values() if m['file'] and m['file'].lower()==me and m['cfg']==models.get(m['id'])['cfg'] and m['refs'] and (not a.config or m['cfg']==a.config)]
+    if a.config and not root: sys.exit('configuration %r not found; the tree holds %s' % (a.config, sorted({m['cfg'] for m in models.values() if m['file'] and m['file'].lower()==me})))
     root=root[0] if root else max(models.values(),key=lambda m:len(m['refs']))
     print('root model',root['name'],'cfg',root['cfg'],'refs',len(root['refs']))
     index=None
@@ -81,13 +87,29 @@ def main():
             print(f'  part {key}: {len(P)} verts {len(I)} tris, volume {vol*1e9:.1f} mm3, failed faces {fails}')
             parts[key]=(P,N,I,c)
         return key
+    _cd={}
+    def delta_for(file,cfgid):
+        """components that sit elsewhere in this configuration than in the saved tree (config_placements.py); {} for the default configuration or when the file cannot be read"""
+        if not cfgid or not file: return {}
+        if (file,cfgid) not in _cd:
+            path=a.sldasm if file.lower()==me else find(file); dd={}
+            if path:
+                try:
+                    from config_placements import config_deltas
+                    dd=config_deltas(path)['deltas'].get(cfgid,{})
+                    if dd: print(f'  configuration {cfgid} of {file}: {len(dd)} component(s) placed differently from the saved tree')
+                except Exception as e: print('  config placements not read for',file,repr(e)[:100])
+            _cd[(file,cfgid)]=dd
+        return _cd[(file,cfgid)]
     def build(mid,depth=0):
-        kids=[]
+        kids=[]; dd=delta_for(models[mid]['file'],models[mid].get('cfgid',0))
         for r in models[mid]['refs']:
             if r['suppressed']: print('  skip suppressed',r['name'],r['num']); continue
             if r['hidden'] and not a.include_hidden: print('  skip hidden',r['name'],r['num']); continue
             ch=models[r['model']]; nm=f"{r['name']}<{r['num']}>"
-            node=dict(name=nm,matrix=r['T'],extras={'config':r['cfg'],'file':ch['file']})
+            T=r['T']; d=dd.get(f"{r['name']}-{r['num']}")
+            if d is not None: Tr=np.eye(4); Tr[3,:3]=d; T=T@Tr           # this configuration places the component elsewhere than the saved tree does
+            node=dict(name=nm,matrix=T,extras={'config':r['cfg'],'file':ch['file']})
             if ch['file'].upper().endswith('.SLDPRT'):
                 key=load(ch['file'],ch['bbox'])
                 if parts[key] is None: continue
