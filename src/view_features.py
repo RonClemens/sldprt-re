@@ -104,7 +104,7 @@ def _dim_axes(sheet, v, Sv, C, s):
     return out
 
 
-def _profile(Sv, neighbour, cx, cy, r, vertical_neighbour, s_n, r_in=None):
+def _profile(Sv, neighbour, cx, cy, r, vertical_neighbour, s_n, r_in=None, near_low=None):
     """lines of a hole's wall in the neighbouring view: -> (length_in, spans_all, diagonal_count)"""
     nb = neighbour['box']; lines = []; diag = 0
     for sx0, sy0, sx1, sy1, w in Sv:
@@ -115,7 +115,7 @@ def _profile(Sv, neighbour, cx, cy, r, vertical_neighbour, s_n, r_in=None):
         else:
             if abs(sy0 - sy1) < 0.1 and (abs(sy0 - (cy - r)) < 0.8 or abs(sy0 - (cy + r)) < 0.8): lines.append((min(sx0, sx1), max(sx0, sx1)))
             elif r_in and abs(sx0 - sx1) > 0.5 and abs(sy0 - sy1) > 0.5 and np.hypot(sx1 - sx0, sy1 - sy0) >= max(3.0, 0.4 * (r - r_in)) and all(r_in - 1.0 <= abs(y - cy) <= r + 1.0 for y in (sy0, sy1)): diag += 1
-    if not lines: return None, False, diag
+    if not lines: return None, False, diag, None
     lines.sort(); merged = [list(lines[0])]
     for a, b in lines[1:]:
         if a <= merged[-1][1] + 4: merged[-1][1] = max(merged[-1][1], b)
@@ -127,7 +127,11 @@ def _profile(Sv, neighbour, cx, cy, r, vertical_neighbour, s_n, r_in=None):
             if vertical_neighbour and abs(sy0 - sy1) < 0.1 and abs(sy0 - pos) < 1.0 and abs(sx1 - sx0) >= max(40.0, 4 * r): return True
             if not vertical_neighbour and abs(sx0 - sx1) < 0.1 and abs(sx0 - pos) < 1.0 and abs(sy1 - sy0) >= max(40.0, 4 * r): return True
         return False
-    return length / s_n, bool(wall(best[0]) and wall(best[1])), diag
+    lo_e, hi_e = (nb[1], nb[3]) if vertical_neighbour else (nb[0], nb[2]); touches_lo = abs(best[0] - lo_e) < 1.5; touches_hi = abs(best[1] - hi_e) < 1.5
+    side = None
+    if near_low is not None:                                                         # the face seen in the hole's own view appears in this view as the edge next to it
+        side = 'near' if (touches_lo if near_low else touches_hi) else ('far' if (touches_hi if near_low else touches_lo) else 'interior')
+    return length / s_n, bool(wall(best[0]) and wall(best[1])), diag, side
 
 
 def analyse_views(sheet, Sv, geo, C, views, SL, projection='third'):
@@ -136,7 +140,7 @@ def analyse_views(sheet, Sv, geo, C, views, SL, projection='third'):
     by_id = {v['id']: v for v in views}
     for v in views:
         v.setdefault('role', 'pictorial (isometric)' if v['type'] == 'pictorial' else 'detail or section'); v.setdefault('axes', dict(horizontal='?', vertical='?'))
-        s, src, n = _scale(sheet, v, Sv, C) if v['type'] == 'orthographic' else (None, 'n/a', 0); v['scale_pt_per_in'] = None if s is None else round(float(s), 3); v['scale_source'] = src
+        s, src, n = _scale(sheet, v, Sv, C) if v['type'] == 'orthographic' else (None, 'n/a', 0); v['scale_pt_per_in'] = None if s is None else round(float(s), 3); v['scale_source'] = src; v['scale_matches'] = int(n or 0)
     for v in views:                                                                   # orthographic views aligned with each other are drawn at one scale unless one carries its own label
         if v['scale_pt_per_in'] is None and v['type'] == 'orthographic' and not v.get('scale'):
             for al in v.get('aligned_with', []):
@@ -164,18 +168,19 @@ def analyse_views(sheet, Sv, geo, C, views, SL, projection='third'):
                 nbv = by_id[al]; sn = nbv.get('scale_pt_per_in')
                 if not sn: continue
                 vertical = nbv['box'][1] >= b[3] - 1 or nbv['box'][3] <= b[1] + 1
-                outer = _profile(Sv, nbv, st['cx'], st['cy'], ro, vertical, sn, rs[-1] if len(rs) > 1 else None); inner = _profile(Sv, nbv, st['cx'], st['cy'], rs[-1], vertical, sn) if len(rs) > 1 else None
+                nl = (nbv['box'][1] >= b[3] - 1) if vertical else (nbv['box'][0] >= b[2] - 1)            # the neighbour lies above / to the right: the edge facing this view is its low edge
+                outer = _profile(Sv, nbv, st['cx'], st['cy'], ro, vertical, sn, rs[-1] if len(rs) > 1 else None, nl); inner = _profile(Sv, nbv, st['cx'], st['cy'], rs[-1], vertical, sn, None, nl) if len(rs) > 1 else None
                 if outer[0] is not None or (inner and inner[0] is not None): prof = (al, outer, inner); break
             if len(rs) > 1:
                 if CSK.search(callout) or (prof and prof[1][2] > 0): feat['type'] = 'countersunk hole'; feat['countersink_diameter_in'] = feat['diameters_in'][0]; feat['hole_diameter_in'] = feat['diameters_in'][-1]
                 elif CBORE.search(callout) or (prof and prof[1][0] is not None and prof[2] and prof[2][0] is not None): feat['type'] = 'counterbored hole'; feat['counterbore_diameter_in'] = feat['diameters_in'][0]; feat['hole_diameter_in'] = feat['diameters_in'][-1]
                 else: feat['type'] = 'stepped hole (counterbore or countersink: not told apart)'
-                if prof and prof[1][0] is not None: feat['outer_step_length_in'] = round(prof[1][0], 4)
-                if prof and prof[2] and prof[2][0] is not None: feat['inner_step_length_in'] = round(prof[2][0], 4); feat['inner_through'] = prof[2][1]
+                if prof and prof[1][0] is not None: feat['outer_step_length_in'] = round(prof[1][0], 4); feat['outer_from'] = prof[1][3]
+                if prof and prof[2] and prof[2][0] is not None: feat['inner_step_length_in'] = round(prof[2][0], 4); feat['inner_through'] = prof[2][1]; feat['inner_from'] = prof[2][3]
             else:
                 if THREAD.search(callout): feat['type'] = 'tapped hole'; feat['thread'] = THREAD.search(callout).group(0)
                 if prof and prof[1][0] is not None:
-                    feat['depth_in'] = round(prof[1][0], 4); feat['through'] = bool(prof[1][1]); feat['type'] = ('through ' if prof[1][1] else 'blind ') + feat['type'] if feat['type'] == 'hole' else feat['type']
+                    feat['depth_in'] = round(prof[1][0], 4); feat['through'] = bool(prof[1][1]); feat['depth_from'] = prof[1][3]; feat['type'] = ('through ' if prof[1][1] else 'blind ') + feat['type'] if feat['type'] == 'hole' else feat['type']
                 elif THRU.search(callout): feat['through'] = True; feat['type'] = 'through ' + feat['type'] if feat['type'] == 'hole' else feat['type']
                 else: feat['type'] = 'hole (unknown depth)' if feat['type'] == 'hole' else feat['type']
             feat['profile_from'] = prof[0] if prof else None; v['features'].append(feat)

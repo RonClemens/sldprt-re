@@ -181,3 +181,24 @@ and marks under 20 pt are not views, and the item balloons (thin circles with a 
 
 **Page 121 (27244681, the chain guide channel), the one prismatic drawing of the package with no CAD file at all, was not rebuilt.** The sheet's text decodes (same glyph-index fonts), but its dimensions come out as `158` and `7` millimetres: the dimension text is in a form the dimension reader does not parse (fractions and inch marks in separate runs close together). That is the next fix before the channel (a 5 in C-section, 66 3/4 in long with three holes and a countersink detail)
 can be read; the other CAD-less pages (27244674, the electrical installation) are assemblies of conduit, not parts.
+
+### Rebuild from the building blocks (`src/rebuild_from_blocks.py`)
+
+`python3 src/rebuild_from_blocks.py DRAWING.pdf PAGE OUT_DIR --fcpython .../freecadcmd [--cad PART.SLDPRT] [--projection third|first] [--unit inch|mm]` turns a page's building blocks (view roles, scales, holes, slots, silhouettes) into a FreeCAD solid, with a status for every value, and with `--cad` compares it with the CAD part.
+
+How the solid is made: the object linework of each view (front, top or bottom, side) is rasterised, closed and traced into a silhouette polygon, so rounded corners, chamfers and an angle's L-profile are in it; the solid is the **visual hull**, the intersection of the silhouettes each extended along its viewing direction (front: X across, Y up; the depth Z from the front face; third-angle layout unless told otherwise).
+A plate standing in the inside corner of an angle (the front outline has a diagonal edge between two legs; two lines a plate's thickness apart in a side or plan view) is taken out of the profile and put back over its own span. Holes, stepped holes and slots are cut from the circles and stadium outlines to the depths the neighbouring view shows, from the face the view looks at (near) or from the opposite face (far); no depth found means through, and says so.
+When the sheet has no inch marks the unit is chosen by which reading the drawn linework supports (`unit_guess`). The views must agree on the sizes they share (front and top widths, front and side heights, top and side depths, within 3 percent); if not, the result says the solid is not trustworthy and why.
+
+**Status of every value** (provenance.json, report.md): `stated` when a printed dimension equals it within one drawn point or 1/64 in; `unconfirmed` for everything measured from the linework, assumed (through, near or far face) or inferred (silhouette, visual hull, rib), each saying which. The report ends with what the views do not show: pockets, ribs not recognised, cavities, hole threads, edge breaks, material.
+
+**How close, against the CAD parts that generated the drawings** (CAD side tested by ray parity on its mesh; the mapping of axes between the frames is searched, not known):
+
+| drawing / part | views used | extents | holes | volume overlap (IoU) |
+|---|---|---|---|---|
+| 27244630 block (page 40) | front, bottom, right side | 3.5 x 2.125 x 3.5 in, exact | 10 of 10 cuts match a CAD hole, 0.001 in | 0.983 (the cone of the tapped hole, a 1/4 in chamfer and the rounded corner approximation) |
+| 27244633 STOP BRACKET (page 41) | left side, front, bottom | 6 x 8 x 3.5 in, exact | 10 of 10 match (8 slot ends, 2 upright holes); the angle's inside corner radius (the 11th CAD "hole") is not recovered | 0.984 with the gusset recognised (0.42 without: the visual hull fills the whole corner with a full-width plate) |
+| 27244643 chain anchor (page 45) | top, left side, front | 6.75 x 1.5 x 3.25 in, exact | 5 of 5, 0.001 in | 0.998 (after the unit was chosen as inch: read as millimetres the scale came out four times too big) |
+
+Pages where it refuses, with the reason in the report: 27244626 (page 34), 27244612 (pages 28 and 29): the views disagree on the sizes they share (a plate drawn with details at other scales, a long member shown with break lines, a sheet with several parts); an earlier version built a wrong solid or an empty one for these, and the consistency check is what now stops it. Measured values on the three parts that worked are exact to about 0.001 in, better than the printed fractions (a 1/32 in rounding of a metric hole pattern shows as 0.0154 in).
+Limits: prismatic parts with holes, slots, rounded corners, chamfers and the corner plate; pockets (a blind rectangular recess), ribs other than the gusset case, revolved parts, hole threads, cones at hole bottoms, inside fillets hidden by a plate; three views (two give a looser hull); the layout's projection must be right (the flag is `--projection`).

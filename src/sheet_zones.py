@@ -82,6 +82,12 @@ def read_zones(pdf, page, projection='third', unit=None, virtual_grid=True):
     sheet = read_pdf(pdf, pages=[page]).sheets[0]; S, geo = DP.read_segments(pdf, page); W, H = sheet.size_pt
     if unit in ('inch', 'mm'):                                                        # override when the reader could not tell the sheet's unit
         for d in sheet.dimensions: d.unit = unit
+    elif getattr(sheet, 'unit_assumed', False) and sheet.dimensions and projection != '_no_unit_guess':
+        # nothing on the sheet says the unit (no inch marks): read it both ways and keep the one the drawn linework supports better (more printed values equal a spacing of lines at the view's scale)
+        a = read_zones(pdf, page, '_no_unit_guess', 'mm', virtual_grid); b = read_zones(pdf, page, '_no_unit_guess', 'inch', virtual_grid)
+        ma = sum(v.get('scale_matches', 0) for v in a['views']); mb = sum(v.get('scale_matches', 0) for v in b['views'])
+        pick = b if mb > 1.2 * ma else a; pick['unit_guess'] = dict(chosen='inch' if pick is b else 'mm', matches_if_mm=ma, matches_if_inch=mb, note='the sheet carries no inch marks, so the unit was inferred; pass unit= to override')
+        return pick if projection == 'third' else read_zones(pdf, page, projection, pick['unit_guess']['chosen'], virtual_grid)
     fx0, fy0, fx1, fy1 = _frame(S, W, H); cols, rows = _labels(sheet)
     if len(cols) >= 2 and len(rows) >= 2:
         xe = [fx0] + [(a[0] + b[0]) / 2 for a, b in zip(cols, cols[1:])] + [fx1]; ye = [fy1] + [(a[0] + b[0]) / 2 for a, b in zip(rows, rows[1:])] + [fy0]
