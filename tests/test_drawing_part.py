@@ -32,11 +32,13 @@ pg.dim_h('D4', X0, X0 + 22.0, Y0 - 24, Y0, Y0, [(-6, -4.5, '0.866', 3.5)], kind=
 pg.dim_v('D5', EY, EY + TH, X0 + W + 14, X0 + W, X0 + W, [(1.0, -6, '2.125', 3.5)], kind='linear', value=2.125, tol=dict(kind='none'))
 pg.dim_v('D6', EY, EY + 34.925, X0 - 14, X0, X0, [(-8.0, -6, '1.375', 3.5)], rot=90, kind='linear', value=1.375, tol=dict(kind='none'))
 pg.text(X0 - 50, Y0 + 40, '0.875 THRU ALL', 3.5)
+pg.rect(10, 10, 410, 287, 0.35)                                                                                    # the sheet border: must not become the outline
+pg.text(X0 + 10, Y0 - 34, 'SCALE 1 : 1', 3.5)
 path = os.path.join(tempfile.mkdtemp(), 'part.pdf'); G.write_pdf(pg, path)
 
 m = D.measure(path, 1, unit='inch')
 assert 'error' not in m, m
-assert abs(m['scale_pt_per_in'] - 72.0) < 0.01 and m['scale_matches'] >= 3, m
+assert abs(m['scale_pt_per_in'] - 72.0) < 0.01 and m['scale_matches'] >= 3 and m['scale_source'].startswith('label') and not m['scale_ambiguous'], m          # the SCALE 1 : 1 label below the plan view is used
 q = {x['what']: x for x in m['quantities']}
 assert q['plan width']['status'] == 'stated' and abs(q['plan width']['value_in'] - 3.5) < 1e-3 and abs(q['plan width']['measured_in'] - 3.5) < 0.01, q['plan width']
 assert abs(q['plan depth']['measured_in'] - 3.5) < 0.01 and abs(q['elevation height (thickness)']['value_in'] - 2.125) < 0.01, q
@@ -62,4 +64,14 @@ md = D.to_markdown(m) + D.compare_markdown(c); assert 'unconfirmed' in md and 'D
 S = np.array([[50 + 20 * math.cos(a), 50 + 20 * math.sin(a), 50 + 20 * math.cos(b), 50 + 20 * math.sin(b), 0.7] for a, b in zip(np.linspace(0, 2 * math.pi, 41)[:-1], np.linspace(0, 2 * math.pi, 41)[1:])])
 cc = D.circles(S); assert len(cc) == 1 and abs(cc[0]['r'] - 20) < 0.1 and abs(cc[0]['cx'] - 50) < 0.1, cc
 empty = G.Page(); empty.rect(10, 10, 50, 50, 0.35); p2 = os.path.join(os.path.dirname(path), 'empty.pdf'); G.write_pdf(empty, p2); assert 'error' in D.measure(p2, 1)
+# a label that disagrees with the printed values is not trusted: the scale is inferred and the disagreement reported
+pg2 = G.Page()
+for line in pg.ops: pg2.ops.append(line)
+pg2.text(X0 + 10, Y0 - 44, 'SCALE 1 : 4', 3.5)       # a nearer wrong label would win only if it were nearer: this one is farther, so the 1 : 1 label still decides
+p3 = os.path.join(os.path.dirname(path), 'two.pdf'); G.write_pdf(pg2, p3); m2 = D.measure(p3, 1, unit='inch'); assert m2['scale_source'].startswith('label SCALE 1 : 1'), m2['scale_source']
+wrong = G.Page()
+for line in pg.ops: wrong.ops.append(line.replace('(SCALE 1 : 1)', '(SCALE 1 : 3)'))
+p4 = os.path.join(os.path.dirname(path), 'wrong.pdf'); G.write_pdf(wrong, p4); m3 = D.measure(p4, 1, unit='inch'); assert m3['scale_source'] == 'inferred' and abs(m3['scale_pt_per_in'] - 72) < 0.01 and any('disagrees' in x for x in m3['not_measured']), (m3['scale_source'], m3['not_measured'])
+# circles alone (a hole detail with no outline) are refused
+solo = G.Page(); solo.circle(100, 100, 5, 0.35); solo.circle(130, 100, 5, 0.35); solo.circle(160, 100, 5, 0.35); p5 = os.path.join(os.path.dirname(path), 'solo.pdf'); G.write_pdf(solo, p5); assert 'error' in D.measure(p5, 1)
 print('OK: scale 72 pt/in inferred, outline / corners / thickness / bore / stepped holes measured, stated vs unconfirmed marked, compared with a CAD feature list, polyline circles found, a page without holes refused')

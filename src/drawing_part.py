@@ -108,14 +108,24 @@ def _near(v, vals, tol): return next((x for x in vals if abs(x - v) <= tol), Non
 def measure(pdf, page, stated_tol_in=1 / 64, unit=None):
     """unit: 'inch' or 'mm' to override the sheet's unit when the reader could not tell (`unit_assumed`); default: as read"""
     from pdf_drawing import read_pdf
-    sheet = read_pdf(pdf, pages=[page]).sheets[0]; S, _ = read_segments(pdf, page)
+    sheet = read_pdf(pdf, pages=[page]).sheets[0]; S, geo0 = read_segments(pdf, page); W_, H_ = sheet.size_pt
+    keep = np.ones(len(S), bool)                                                    # the sheet border (very long lines) and the title block are not part of any view
+    for i, (x0, y0, x1, y1, w) in enumerate(S):
+        if abs(y0 - y1) < 0.05 and abs(x1 - x0) >= 0.85 * W_ or abs(x0 - x1) < 0.05 and abs(y1 - y0) >= 0.85 * H_: keep[i] = False
+    tb = [n.pos for n in sheet.notes if n.kind == 'title_block' and n.pos]
+    tbx0, tby1 = (min(p_[0] for p_ in tb) - 60, max(p_[1] for p_ in tb) + 30) if tb else (None, None)
+    if tb:
+        for i, (x0, y0, x1, y1, w) in enumerate(S):
+            if min(x0, x1) >= tbx0 and max(y0, y1) <= tby1: keep[i] = False
+    S = S[keep]
     if unit and unit not in ('inch', 'mm'): raise ValueError('unit must be inch or mm')
     as_in = lambda d: d.value if (unit == 'inch' or (not unit and d.unit == 'inch')) else d.value / IN
     vals = [(d.id, as_in(d)) for d in sheet.dimensions if d.value]; call = []
     from feature_determinacy import callout_values
     call = callout_values([n.text for n in sheet.notes]); notfound = []
-    C = circles(S); _, geo = read_segments(pdf, page)
+    C = circles(S); geo = geo0
     for k, a in enumerate(geo.arcs):                                                    # circles the PDF reader already fitted (Bezier circles)
+        if tb and a[0] >= tbx0 and a[1] <= tby1: continue
         if a[2] > 5 and not any(np.hypot(a[0] - c['cx'], a[1] - c['cy']) < 0.5 and abs(a[2] - c['r']) < 0.5 for c in C) and (a[3][2] - a[3][0]) > 1.8 * a[2]: C.append(dict(cx=float(a[0]), cy=float(a[1]), r=float(a[2]), w=float(geo.arc_w[k]) if k < len(geo.arc_w) else OBJ_W))
     if len(C) < 2: return dict(error='no plan view: fewer than 2 full circles were found in the linework', circles=len(C))
     # plan view: the biggest cluster of circles (centres within 110 pt of a neighbour; callout bubbles and other views are farther away)
@@ -147,11 +157,27 @@ def measure(pdf, page, stated_tol_in=1 / 64, unit=None):
     c0 = g[0]; plan = next((k for k, bx in cbox.items() if bx[0] <= c0['cx'] - c0['r'] + 1 and bx[2] >= c0['cx'] + c0['r'] - 1 and bx[1] <= c0['cy'] - c0['r'] + 1 and bx[3] >= c0['cy'] + c0['r'] - 1 and any(abs(b[0] - bx[0]) < 0.1 or True for b in clusters[k])), None)
     if plan is None: return dict(error='no outline of object lines around the circles', circles=len(C))
     L, B, R, T = cbox[plan]
+    if (R - L) < 1.15 * (gx1 - gx0) or (T - B) < 1.15 * (gy1 - gy0): return dict(error='no outline of object lines around the circles (the cluster is the circles alone)', circles=len(C))
+    if R - L > 0.6 * W_ or T - B > 0.6 * H_: return dict(error='the outline around the circles spans most of the sheet: a whole assembly or the sheet border, not one part', circles=len(C))
+    labels = []
+    for n in sheet.notes:
+        mm_ = re.search(r'SCALE\s*(\d+(?:\.\d+)?)\s*[:/]\s*(\d+(?:\.\d+)?)', n.text.upper())
+        if mm_ and n.pos and float(mm_.group(2)) > 0 and float(mm_.group(1)) > 0:
+            dx = max(L - n.pos[0], 0, n.pos[0] - R); dy = max(B - n.pos[1], 0, n.pos[1] - T); labels.append((float(np.hypot(dx, dy)), float(mm_.group(1)) / float(mm_.group(2)), n.text))
+    label = min(labels) if labels and min(labels)[0] <= 150 else None                     # the SCALE a : b label nearest to the plan view
     # scale from the dimensions: coordinates of the lines of the plan view and of the elevation (any width: extension lines carry feature coordinates too) and of the circles
     ev = next(((bx[1], bx[3]) for k, bx in cbox.items() if k != plan and abs(bx[0] - L) < 1.5 and abs(bx[2] - R) < 1.5 and (bx[1] > T or bx[3] < B) and bx[3] - bx[1] > 20), None)
     y_lo, y_hi = min(B, ev[0] if ev else B) - 2, max(T, ev[1] if ev else T) + 2
     nearx = [x for x in V if L - 2 <= x <= R + 2] + [c['cx'] + k * c['r'] for c in g for k in (-1, 0, 1)]; neary = [y for y in H if y_lo <= y <= y_hi] + [c['cy'] + k * c['r'] for c in g for k in (-1, 0, 1)]
-    s, nm, runner, amb = infer_scale([v for _, v in vals] + call, nearx, neary, [R - L, T - B], [2 * c['r'] for c in g])
+    src = 'inferred'; res_ = None; allv = [v for _, v in vals] + call; ds = [2 * c['r'] for c in g]
+    free = infer_scale(allv, nearx, neary, [R - L, T - B], ds)
+    if label:                                                                                    # the sheet says the scale: accept it when the printed values agree with it about as well as with the best scale
+        r_ = infer_scale(allv, nearx, neary, [R - L, T - B], ds, factors=(label[1],))
+        if r_[0] is not None and (free[0] is None or r_[1] >= 0.7 * free[1]): res_ = r_; src = f'label {label[2].strip()}'
+        else: notfound.append(f"the label '{label[2].strip()}' near the plan view disagrees with the printed values; the scale was inferred instead")
+    s, nm, runner, amb = res_ if res_ else free
+    if s is None: return dict(error=f'scale not determined: at most {nm} printed values match a spacing of lines in the plan view (3 needed)', circles=len(C))
+    if src != 'inferred': amb = False
     if s is None: return dict(error=f'scale not determined: at most {nm} printed values match a spacing of lines in the plan view (3 needed)', circles=len(C))
     tol = stated_tol_in
     dpos = {d.id: d.text_pos for d in sheet.dimensions}; cpos = []
@@ -176,7 +202,7 @@ def measure(pdf, page, stated_tol_in=1 / 64, unit=None):
                 std = m[1] if k == 0 or total_in is None else total_in - m[1]                  # a value printed from the other edge: the position from the standard edge is the stated span minus it
                 return dict(what=what, measured_in=round(x_pt / s, 4), status='stated', value_in=round(std, 4), by=m[0], printed_in=round(m[1], 4), residual_in=round(raw - m[1], 4), reference=('' if k == 0 else alts[k - 1][1]))
         raw = x_pt / s; return dict(what=what, measured_in=round(raw, 4), status='unconfirmed', value_in=round(raw, 4), by=None, residual_in=None, reference='')
-    out = dict(scale_pt_per_in=round(s, 3), scale_matches=nm, scale_runner_up=runner, scale_ambiguous=bool(amb), plan_outline_pt=[round(L, 2), round(B, 2), round(R, 2), round(T, 2)], quantities=[])
+    out = dict(scale_pt_per_in=round(s, 3), scale_source=src, scale_matches=nm, scale_runner_up=runner, scale_ambiguous=bool(amb), plan_outline_pt=[round(L, 2), round(B, 2), round(R, 2), round(T, 2)], quantities=[])
     q = out['quantities']; q.append(val(R - L, 'plan width', plan_vals)); q.append(val(T - B, 'plan depth', plan_vals))
     corners = []
     for name, (cx_, cy_) in dict(bl=(L, B), br=(R, B), tl=(L, T), tr=(R, T)).items():
@@ -304,7 +330,7 @@ def compare_markdown(c):
 
 def to_markdown(m, name=''):
     if 'error' in m: return f"# Part rebuilt from the drawing {name}\n\nNot measured: {m['error']}\n"
-    L = [f'# Part rebuilt from the drawing {name}'.strip(), '', f"Scale inferred: {m['scale_pt_per_in']} pt per inch ({m['scale_matches']} printed values match line spacings; runner-up score {m['scale_runner_up']}{'; the scale is NOT clearly better than the next candidate' if m.get('scale_ambiguous') else ''}). Values: {m['counts']}. `unconfirmed` = measured from the linework at that scale, not printed on the sheet.", '',
+    L = [f'# Part rebuilt from the drawing {name}'.strip(), '', f"Scale ({m.get('scale_source', 'inferred')}): {m['scale_pt_per_in']} pt per inch ({m['scale_matches']} printed values match line spacings; runner-up score {m['scale_runner_up']}{'; the scale is NOT clearly better than the next candidate' if m.get('scale_ambiguous') else ''}). Values: {m['counts']}. `unconfirmed` = measured from the linework at that scale, not printed on the sheet.", '',
          '| quantity | value (in) | status | printed by | measured - printed (in) |', '|---|---|---|---|---|']
     for x in m['quantities']: L.append(f"| {x['what']} | {x['value_in'] if x.get('value_in') is not None else ''} | {x['status']} | {x.get('by') or ''} | {x.get('residual_in') if x.get('residual_in') is not None else ''} |" if 'note' not in x else f"| {x['what']} | | {x['status']} | | {x['note']} |")
     L += ['', 'Not measured: ' + '; '.join(m['not_measured'])]
