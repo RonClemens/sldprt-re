@@ -63,6 +63,19 @@ def circles(S, min_segs=8):
     return out
 
 
+def slots(S, min_segs=10):
+    """closed stadium outlines (a slot: two straight sides and two semicircular ends) from chains of segments -> [dict(cx, cy, width, length_between_centres, orientation 'x'|'y')] in points; a closed chain whose perimeter equals
+    that of its bounding box read as a stadium (within 4 percent) and whose box is at least 1.2 times longer than wide"""
+    out = []
+    for comp in _components(S):
+        if len(comp) < min_segs: continue
+        seg = S[comp]; pts = np.vstack([seg[:, :2], seg[:, 2:4]]); x0, y0 = pts.min(0); x1, y1 = pts.max(0); w, h = x1 - x0, y1 - y0; lo, hi = min(w, h), max(w, h)
+        if lo < 4 or hi < 1.2 * lo: continue
+        per = float(np.hypot(seg[:, 2] - seg[:, 0], seg[:, 3] - seg[:, 1]).sum()); stad = 2 * (hi - lo) + np.pi * lo
+        if abs(per - stad) <= 0.04 * stad: out.append(dict(cx=float((x0 + x1) / 2), cy=float((y0 + y1) / 2), width=float(lo), length_between_centres=float(hi - lo), orientation='x' if w >= h else 'y', w=float(np.median(seg[:, 4]))))
+    return out
+
+
 def _union(intervals, gap=6.0):
     iv = sorted((min(a, b), max(a, b)) for a, b in intervals); out = []
     for a, b in iv:
