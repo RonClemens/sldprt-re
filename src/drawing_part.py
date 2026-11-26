@@ -81,7 +81,7 @@ def lines_by_axis(S, min_len=8.0, width=None):
     return {k: _union(v) for k, v in H.items()}, {k: _union(v) for k, v in V.items()}
 
 
-def infer_scale(values_in, xs, ys, extents_pt=(), pt_per_in=72.0, factors=(0.25, 0.5, 1.0, 2.0, 4.0, 1.5, 3.0, 0.75), tol=0.7):
+def infer_scale(values_in, xs, ys, extents_pt=(), diameters_pt=(), pt_per_in=72.0, factors=(0.25, 0.5, 1.0, 2.0, 4.0, 1.5, 3.0, 0.75), tol=0.7):
     """-> (pt per inch, matches, runner-up score, ambiguous) or (None, best matches, 0, True). Each candidate scale is scored by how many printed values equal the spacing of two line coordinates (xs, ys: points) within tol
     points beyond what chance would give (a target near many spacings matches by luck: the expected number is subtracted), plus two for each of the plan view's overall sizes that equals a printed value. Ties go to full size.
     `ambiguous` when the best score is under 1.2 times the runner-up's."""
@@ -94,7 +94,7 @@ def infer_scale(values_in, xs, ys, extents_pt=(), pt_per_in=72.0, factors=(0.25,
             t = v * sc
             if len(alld) and np.min(np.abs(alld - t)) <= tol: n += 1
             chance += min(0.95, float(np.sum(np.abs(alld - t) <= 8.0)) / 16.0 * 2 * tol) if len(alld) else 0.0              # how likely a random target of this size lands on a spacing
-        bonus = 2 * sum(1 for e in extents_pt if any(abs(e / sc - v) * sc <= tol for v in values_in))
+        bonus = 2 * sum(1 for e in extents_pt if any(abs(e / sc - v) * sc <= tol for v in values_in)) + 1.5 * min(4, sum(1 for d_ in set(round(x, 1) for x in diameters_pt) if any(abs(d_ / sc - v) * sc <= tol for v in values_in)))      # circle diameters equal to a printed value or callout
         res.append((n - chance + bonus, f == 1.0, n, sc))
     res.sort(reverse=True); ok = [r for r in res if r[2] >= 3]
     if not ok: return None, max(r[2] for r in res), 0, True
@@ -151,7 +151,7 @@ def measure(pdf, page, stated_tol_in=1 / 64, unit=None):
     ev = next(((bx[1], bx[3]) for k, bx in cbox.items() if k != plan and abs(bx[0] - L) < 1.5 and abs(bx[2] - R) < 1.5 and (bx[1] > T or bx[3] < B) and bx[3] - bx[1] > 20), None)
     y_lo, y_hi = min(B, ev[0] if ev else B) - 2, max(T, ev[1] if ev else T) + 2
     nearx = [x for x in V if L - 2 <= x <= R + 2] + [c['cx'] + k * c['r'] for c in g for k in (-1, 0, 1)]; neary = [y for y in H if y_lo <= y <= y_hi] + [c['cy'] + k * c['r'] for c in g for k in (-1, 0, 1)]
-    s, nm, runner, amb = infer_scale([v for _, v in vals] + call, nearx, neary, [R - L, T - B])
+    s, nm, runner, amb = infer_scale([v for _, v in vals] + call, nearx, neary, [R - L, T - B], [2 * c['r'] for c in g])
     if s is None: return dict(error=f'scale not determined: at most {nm} printed values match a spacing of lines in the plan view (3 needed)', circles=len(C))
     tol = stated_tol_in
     dpos = {d.id: d.text_pos for d in sheet.dimensions}; cpos = []
