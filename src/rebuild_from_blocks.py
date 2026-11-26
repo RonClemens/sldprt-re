@@ -106,6 +106,63 @@ def find_rib_span(S, views, by_role, tri, D, X, Y, objw):
     return dict(z1=round(z[0], 4), z2=round(z[1], 4), thickness=round(t, 4), view=v['id'], role=role, scale=v['scale_pt_per_in'])
 
 
+def elementary_rects(S, box, objw, scale, tol_pt=1.2):
+    """closed axis-aligned rectangles of the object linework in a view that no line runs through (the pieces a nested layout is made of) -> [dict(u0, u1, v0, v1)] in inches from the box's lower left"""
+    x0, y0, x1, y1 = box; Hs = {}; Vs = {}
+    for a, b, c, d, w in S:
+        if w < objw or not (x0 - 1 <= min(a, c) and max(a, c) <= x1 + 1 and y0 - 1 <= min(b, d) and max(b, d) <= y1 + 1): continue
+        if abs(b - d) < 0.1: Hs.setdefault(round(b / tol_pt) * tol_pt, []).append((min(a, c), max(a, c)))
+        elif abs(a - c) < 0.1: Vs.setdefault(round(a / tol_pt) * tol_pt, []).append((min(b, d), max(b, d)))
+    def merge(iv):
+        iv = sorted(iv); out = [list(iv[0])]
+        for p, q in iv[1:]:
+            if p <= out[-1][1] + 1.0: out[-1][1] = max(out[-1][1], q)
+            else: out.append([p, q])
+        return out
+    Hm = {y: merge(v) for y, v in Hs.items()}; Vm = {x: merge(v) for x, v in Vs.items()}
+    def covers(iv, lo, hi): return any(p <= lo + 1.5 and q >= hi - 1.5 for p, q in iv)
+    ys = sorted(Hm); xs = sorted(Vm); rects = []
+    for i, ya in enumerate(ys):
+        for yb in ys[i + 1:]:
+            if yb - ya < 2: continue
+            for j, xa in enumerate(xs):
+                for xb in xs[j + 1:]:
+                    if xb - xa < 2: continue
+                    if covers(Hm[ya], xa, xb) and covers(Hm[yb], xa, xb) and covers(Vm[xa], ya, yb) and covers(Vm[xb], ya, yb): rects.append((xa, xb, ya, yb))
+    out = []
+    for xa, xb, ya, yb in rects:                                                      # elementary: no other line runs across its inside
+        cut = any(ya + 1.5 < y < yb - 1.5 and covers(Hm[y], xa, xb) for y in ys) or any(xa + 1.5 < x < xb - 1.5 and covers(Vm[x], ya, yb) for x in xs)
+        if not cut: out.append(dict(u0=round((xa - x0) / scale, 4), u1=round((xb - x0) / scale, 4), v0=round((ya - y0) / scale, 4), v1=round((yb - y0) / scale, 4)))
+    return out
+
+
+def box_components(rects_by_role, D, tol):
+    """boxes (x0, x1, y0, y1, z0, z1) in the part frame that a rectangle in the front view, one in the top or bottom view and one in a side view all describe: equal x ranges in front and top, equal y ranges in front and side, equal depth ranges in top and side"""
+    def part_rect(role, r):
+        if role == 'front': return dict(x=(r['u0'], r['u1']), y=(r['v0'], r['v1']))
+        if role == 'top': return dict(x=(r['u0'], r['u1']), z=(r['v0'], r['v1']))
+        if role == 'bottom': return dict(x=(r['u0'], r['u1']), z=(D - r['v1'], D - r['v0']))
+        if role == 'right side': return dict(z=(r['u0'], r['u1']), y=(r['v0'], r['v1']))
+        return dict(z=(D - r['u1'], D - r['u0']), y=(r['v0'], r['v1']))
+    eq = lambda a, b: abs(a[0] - b[0]) <= tol and abs(a[1] - b[1]) <= tol
+    F = [part_rect('front', r) for r in rects_by_role.get('front', [])]; T = [part_rect(role, r) for role in ('top', 'bottom') for r in rects_by_role.get(role, [])]; Sd = [part_rect(role, r) for role in ('right side', 'left side') for r in rects_by_role.get(role, [])]
+    out = []
+    def covered(zr, xr):                                                              # same-width top rectangles that together span the depth range
+        iv = sorted(t['z'] for t in T if eq(t['x'], xr))
+        if not iv: return False
+        cur = iv[0][0]; end = iv[0][1]
+        for a, b in iv[1:]:
+            if a <= end + tol: end = max(end, b)
+        return cur <= zr[0] + tol and end >= zr[1] - tol
+    for f in F:
+        for sd in Sd:
+            if eq(f['y'], sd['y']) and covered(sd['z'], f['x']): out.append(dict(x=f['x'], y=f['y'], z=sd['z']))
+    uniq = []
+    for b in out:
+        if not any(all(eq(b[k], u[k]) for k in 'xyz') for u in uniq): uniq.append(b)
+    return uniq
+
+
 def build_spec(pdf, page, projection='third', unit=None):
     import drawing_part as DP, sheet_zones as Z
     from pdf_drawing import read_pdf
@@ -168,6 +225,26 @@ def build_spec(pdf, page, projection='third', unit=None):
         for sl in v['slots']:
             u = (sl['centre_pt'][0] - b[0]) / s; vv = (sl['centre_pt'][1] - b[1]) / s; px, py, pz = to_part(v['role'], u, vv)
             slots.append(dict(view=v['id'], role=v['role'], centre_in_part=[round(px, 4), round(py, 4), round(pz, 4)], width_in=sl['width_in'], length_between_centres_in=sl['length_between_centres_in'], orientation=sl['orientation'], through='assumed'))
+    # nested rectangles: pieces seen as rectangles in the front, a top / bottom and a side view that describe the same boxes (an assembly of blocks, a bracket built from plates)
+    rects = {v['role']: elementary_rects(S, v['box'], objw, v['scale_pt_per_in']) for v in views}; comps = box_components(rects, D, 1.5 / max(v['scale_pt_per_in'] for v in views)) if all(len(rects.get(r, [])) >= 2 for r in ('front',)) and any(len(rects.get(r, [])) >= 2 for r in ('top', 'bottom')) and any(len(rects.get(r, [])) >= 2 for r in ('right side', 'left side')) else []
+    components = None
+    if comps:                                                                         # keep them only when their union reproduces every silhouette (so nothing the views show is missing and nothing extra is shown)
+        import cv2
+        ok = True
+        for role, sg in sil.items():
+            v = by_role[role]; s_ = v['scale_pt_per_in']; k = 8; Wm = int(extent(v, 'u') * k * s_ / 72 * 0 + extent(v, 'u') * 40); Hm_ = int(extent(v, 'v') * 40)
+            if Wm < 4 or Hm_ < 4: continue
+            sc = 40.0; a = np.zeros((Hm_ + 2, Wm + 2), np.uint8); b = np.zeros_like(a); cv2.fillPoly(a, [np.array([[int(x * sc), int(y * sc)] for x, y in sg['points']], np.int32)], 255)
+            for c in comps:
+                if role == 'front': u0, u1, v0, v1 = c['x'][0], c['x'][1], c['y'][0], c['y'][1]
+                elif role in ('top', 'bottom'): u0, u1 = c['x']; v0, v1 = c['z'] if role == 'top' else (D - c['z'][1], D - c['z'][0])
+                elif role == 'right side': u0, u1 = c['z']; v0, v1 = c['y']
+                else: u0, u1 = D - c['z'][1], D - c['z'][0]; v0, v1 = c['y']
+                cv2.rectangle(b, (int(u0 * sc), int(v0 * sc)), (int(u1 * sc) - 1, int(v1 * sc) - 1), 255, -1)
+            inter = int(((a > 0) & (b > 0)).sum()); union = int(((a > 0) | (b > 0)).sum())
+            if union and inter / union < 0.9: ok = False
+        if ok: components = comps
+        else: notes.append('nested rectangles were found but the boxes they describe do not reproduce every view: the visual hull is used')
     rib = None
     if 'front' in sil:
         tri = find_rib_triangle(sil['front']['points'], X, Y, sil['front']['area_in2'])
@@ -182,7 +259,9 @@ def build_spec(pdf, page, projection='third', unit=None):
         v = by_role[role]; prov.append(dict(name=f'silhouette of the {role} view', value=f"{len(sg['points'])} vertices, fills {sg['box_fill']} of its box", status='unconfirmed (silhouette)', evidence='traced from the object linework; corners and chamfers are polygon approximations'))
     notes.extend(warnings)
     if len(sil) < 3: notes.append(f"only {len(sil)} silhouette(s): the visual hull is bounded by those views only, so what the missing view would trim is not removed")
-    spec = dict(unit_guess=z.get('unit_guess'), X=X, Y=Y, D=D, rib=rib, silhouettes=sil, holes=holes, slots=slots, projection=projection, provenance=prov, not_shown=notes, views={v['role']: dict(id=v['id'], scale=v['scale_pt_per_in'], scale_source=v['scale_source'], zones=v['range']) for v in views})
+    if components:
+        for i, c in enumerate(components, 1): prov.append(dict(name=f'component box {i}', value=f"x {[round(t, 3) for t in c['x']]}, y {[round(t, 3) for t in c['y']]}, z {[round(t, 3) for t in c['z']]} in", status='unconfirmed (inferred)', evidence='a rectangle in the front, a top or bottom and a side view agree on its ranges; whether it is one part or several is not shown'))
+    spec = dict(components=components, unit_guess=z.get('unit_guess'), X=X, Y=Y, D=D, rib=rib, silhouettes=sil, holes=holes, slots=slots, projection=projection, provenance=prov, not_shown=notes, views={v['role']: dict(id=v['id'], scale=v['scale_pt_per_in'], scale_source=v['scale_source'], zones=v['range']) for v in views})
     return spec
 
 
@@ -198,14 +277,18 @@ def prism(role, pts):
     else: poly = [V(0, v, (u if role == 'right side' else D - u)) for u, v in P]; ext = V(X, 0, 0)
     face = Part.Face(Part.makePolygon(poly + [poly[0]])); return face.extrude(ext)
 solid = None; rib = sp.get('rib')
-for role, sg in sp['silhouettes'].items():
+if sp.get('components'):
+    for c in sp['components']:
+        bx = Part.makeBox((c['x'][1] - c['x'][0]) * IN, (c['y'][1] - c['y'][0]) * IN, (c['z'][1] - c['z'][0]) * IN, V(c['x'][0] * IN, c['y'][0] * IN, c['z'][0] * IN))
+        solid = bx if solid is None else solid.fuse(bx)
+for role, sg in ([] if sp.get('components') else sp['silhouettes'].items()):
     try: pr = prism(role, sg['points'])
     except Exception: continue
     if role == 'front' and rib:                                       # the inside corner of the angle is not filled: only the rib is, over its own span
         t = rib['triangle']; tp = [V(u * IN, v * IN, -1) for u, v in t['polygon']]
         pr = pr.cut(Part.Face(Part.makePolygon(tp + [tp[0]])).extrude(V(0, 0, D + 2)))
     solid = pr if solid is None else solid.common(pr)
-if rib and solid is not None:
+if rib and solid is not None and not sp.get('components'):
     t = rib['triangle']; tp = [V(u * IN, v * IN, rib['z1'] * IN) for u, v in t['polygon']]
     solid = solid.fuse(Part.Face(Part.makePolygon(tp + [tp[0]])).extrude(V(0, 0, (rib['z2'] - rib['z1']) * IN)))
 if solid is None: raise SystemExit('no silhouette could be extruded')
@@ -314,11 +397,20 @@ def volume_overlap(step, P3, Fi, lo, ext, mine, perm, flips, out_dir, fcpython, 
                 note='the other side is a ray-parity test on a mesh; a mesh that is not closed gives wrong parity')
 
 
-def compare_mesh(spec, step, V_mm, F, out_dir, fcpython, perm=(0, 1, 2), flips=(0, 0, 1), grid=28):
-    """overlap with a mesh (mm) whose frame is related to the rebuilt one by perm / flips (default: the frame the GLB drawings are made in: front view from +z, so the depth runs from +z)"""
+def compare_mesh(spec, step, V_mm, F, out_dir, fcpython, perm=(0, 1, 2), flips=(0, 0, 1), grid=28, search=False):
+    """overlap with a mesh (mm). perm / flips relate the rebuilt frame to the mesh's (default: the frame the GLB drawings are made in: front view from +z, so the depth runs from +z); with search=True every axis permutation and flip whose extents fit is tried on a coarse grid and the best is kept"""
     V = V_mm / IN; lo = V.min(0); ext = V.max(0) - lo; mine = np.array([spec['X'], spec['Y'], spec['D']])
-    res = dict(extents=dict(rebuild=[round(float(x), 3) for x in mine], mesh=[round(float(x), 3) for x in ext]), mapping=dict(permutation=list(perm), flips=list(flips)))
-    res['volume'] = volume_overlap(step, V, F, lo, ext, mine, perm, flips, out_dir, fcpython, grid); return res
+    res = dict(extents=dict(rebuild=[round(float(x), 3) for x in mine], mesh=[round(float(x), 3) for x in ext]))
+    if search:
+        best = None
+        for pm in itertools.permutations(range(3)):
+            if np.any(np.abs(ext[list(pm)] - mine) > 0.05 * np.maximum(mine, 0.2) + 0.05): continue
+            for fl in itertools.product((0, 1), repeat=3):
+                r = volume_overlap(step, V, F, lo, ext, mine, pm, fl, out_dir, fcpython, 14)
+                if r['iou'] is not None and (best is None or r['iou'] > best[0]): best = (r['iou'], pm, fl)
+        if best is None: res['mapping'] = None; res['note'] = 'the extents do not match under any axis permutation'; return res
+        perm, flips = best[1], best[2]
+    res['mapping'] = dict(permutation=list(perm), flips=list(flips)); res['volume'] = volume_overlap(step, V, F, lo, ext, mine, perm, flips, out_dir, fcpython, grid); return res
 
 
 def report(spec, build, comp=None, name=''):

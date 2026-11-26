@@ -53,7 +53,13 @@ def _roles(views, projection):
             elif _overlap(a['box'][1], a['box'][3], b['box'][1], b['box'][3]) >= 0.7 * min(ha, hb) and (b['box'][0] >= a['box'][2] - 1 or b['box'][2] <= a['box'][0] + 1): nb[a['id']].append(('h', b))
     for v in views: v['role'] = 'pictorial (isometric)' if v['type'] == 'pictorial' else 'detail or section (aligned with no view)'; v['aligned_with'] = []
     if not main: return
-    hub = max(main, key=lambda v: (len(nb[v['id']]), -v['circles'], area(v))); hub['role'] = 'front'      # most aligned neighbours; then the view with fewest circles (hole axes square to the view belong to top, bottom and side views)
+    def convention(v):                                                              # a lone pair of aligned views: in third angle the front is the lower of a stacked pair, or the left of a side-by-side pair (first angle: the reverse); a convention, flagged below
+        if len(main) != 2 or not nb[v['id']]: return 0
+        k, b = nb[v['id']][0]; third_ = projection != 'first'
+        if k == 'v': return 1 if ((b['box'][1] >= v['box'][3] - 1) == third_) else 0
+        return 1 if ((b['box'][0] >= v['box'][2] - 1) == third_) else 0
+    hub = max(main, key=lambda v: (len(nb[v['id']]), -v['circles'], convention(v), area(v))); hub['role'] = 'front'
+    if len(main) == 2: hub['role_note'] = 'only two aligned views: which one is the front rests on the fewest-circles rule (or the projection convention when equal), not on anything the drawing states: unconfirmed'      # most aligned neighbours; then the view with fewest circles (hole axes square to the view belong to top, bottom and side views)
     third = projection != 'first'
     for kind, b in nb[hub['id']]:
         above = b['box'][1] >= hub['box'][3] - 1; right = b['box'][0] >= hub['box'][2] - 1
@@ -66,6 +72,27 @@ def _roles(views, projection):
             if al: v['role'] = 'auxiliary (aligned with ' + ', '.join(al) + ')'; v['aligned_with'] = al
     for v in views:
         v['axes'] = dict(zip(('horizontal', 'vertical'), AXES_OF.get(v['role'], ('?', '?'))))
+
+
+
+def _bare_number_scale(sheet, views):
+    """a sheet with no dimension lines but numbers written beside its views (`100` under the front view, `60` beside the right view): each number is the size of the view's extent it stands at, in millimetres (or inches when the notes say so); the scale most numbers agree on, as pt per inch.
+    -> (scale, how many numbers agree, unit) or None. Needs two numbers that agree."""
+    notes = [n for n in sheet.notes if n.pos]; inch = any(__import__('re').search(r'IN(?:CHES)?\b|DIMENSIONS IN IN', n.text.upper()) and 'MM' not in n.text.upper() for n in notes if len(n.text) > 8)
+    nums = [(float(n.text.strip()), n.pos) for n in notes if __import__('re').fullmatch(r'\d+(?:\.\d+)?', n.text.strip()) and float(n.text.strip()) > 0]
+    cands = []
+    for val, (x, y) in nums:
+        for v in views:
+            if v['type'] != 'orthographic': continue
+            b = v['box']; ex, ey = b[2] - b[0], b[3] - b[1]
+            below_above = b[0] - 20 <= x <= b[2] + 20 and (b[1] - 90 <= y <= b[1] + 5 or b[3] - 5 <= y <= b[3] + 90); beside = b[1] - 20 <= y <= b[3] + 20 and (b[2] - 5 <= x <= b[2] + 90 or b[0] - 90 <= x <= b[0] + 5)
+            for ext, near in ((ex, below_above), (ey, beside)):
+                if near: cands.append((ext / (val if inch else val / 25.4), v['id']))
+    best = None
+    for s0, _ in cands:
+        agree = [c for c in cands if abs(c[0] - s0) <= 0.02 * s0]; ids = {c[1] for c in agree}
+        if len(agree) >= 2 and (best is None or len(agree) > best[1]): best = (float(np.mean([c[0] for c in agree])), len(agree), 'inch' if inch else 'mm')
+    return best
 
 
 def _coords(Sv, box, circles):
@@ -142,11 +169,16 @@ def _profile(Sv, neighbour, cx, cy, r, vertical_neighbour, s_n, r_in=None, near_
 
 def analyse_views(sheet, Sv, geo, C, views, SL, projection='third'):
     import drawing_part as DP
+    for v in views:
+        if v.get('detail'): v['type'] = 'detail'; v['type_note'] = 'titled DETAIL / SECTION / VIEW: an enlarged or cut view at its own scale, not one of the principal views'
     _roles(views, projection); notes = [n for n in sheet.notes if n.kind == 'note' and n.pos and len(n.text.strip()) > 2]
     by_id = {v['id']: v for v in views}
+    bare = _bare_number_scale(sheet, views) if not sheet.dimensions else None
     for v in views:
         v.setdefault('role', 'pictorial (isometric)' if v['type'] == 'pictorial' else 'detail or section'); v.setdefault('axes', dict(horizontal='?', vertical='?'))
-        s, src, n = _scale(sheet, v, Sv, C) if v['type'] == 'orthographic' else (None, 'n/a', 0); v['scale_pt_per_in'] = None if s is None else round(float(s), 3); v['scale_source'] = src; v['scale_matches'] = int(n or 0)
+        s, src, n = _scale(sheet, v, Sv, C) if v['type'] == 'orthographic' else (None, 'n/a', 0)
+        if s is None and bare and v['type'] == 'orthographic' and not v.get('scale'): s, src, n = bare[0], f'inferred from {bare[1]} bare numbers written beside the views ({bare[2]}): unconfirmed', bare[1]
+        v['scale_pt_per_in'] = None if s is None else round(float(s), 3); v['scale_source'] = src; v['scale_matches'] = int(n or 0)
     for v in views:                                                                   # orthographic views aligned with each other are drawn at one scale unless one carries its own label
         if v['scale_pt_per_in'] is None and v['type'] == 'orthographic' and not v.get('scale'):
             for al in v.get('aligned_with', []):
