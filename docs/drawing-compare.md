@@ -222,3 +222,19 @@ What it shows about repeatability: the layout reading, scale, silhouettes and hu
 - a view titled `DETAIL A`, `SECTION B` or `VIEW C` is a detail at its own scale and is excluded from roles and from scale sharing.
 
 Results: the demo bracket rebuilds with volume IoU 1.0 against its GLB (0.823 with the hull alone, which fills the notch between wall and boss). The demo assembly runs but does not match its GLB: the sheet has only two principal views (which of the two is the front rests on the fewest-circles rule and is flagged unconfirmed), no dimensions or scale for the principal views (72 pt/in assumed), and its proportions are not those of the GLB, so it is a schematic rather than a projection of that model. The pipeline does not split an assembly into its components beyond the box detection above. The arm Pack-and-Go PDFs are 1 KB placeholders with no geometry.
+
+## Assembly scale from confirmed detail-part sizes (first trial, Hydro package)
+
+`src/assembly_scale.py` (runner `tools/assembly_scale_run.py`, reference sizes from `tools/part_reference_sizes.py`): the parts list row `SEE DWG nnnnnnnn` links an item to its detail drawing; the item balloon (circle with the item number, leader to the part) locates it on a view; the drawn lengths near the leader end are divided by the part's *stated* overall sizes and the scale most parts agree on wins. Reference sizes: 8 of the 15 Hydro detail parts have at least one stated overall size.
+
+Result against the printed sheet scale (pt per inch = 72 a / b for `SCALE a:b`):
+
+| page | printed | estimate | parts | verdict |
+|---|---|---|---|---|
+| 5 (27244603) | 1:4 (18) | 17.0 (1:4.23) | 1 | 5.5% low |
+| 4 (27244602) | 3:16 (13.5) | 12.9 (1:5.58) | 1 | 4.5% low |
+| 3 (27244601) | 1:5 (14.4) | 2.86 (1:25) | 2 | wrong: two coincidental matches |
+| 6, 11, 12 | | none | | no confirmed size found near a balloon |
+| 7 (no label) | | 4.04 | 1 drawing, 3 items | cannot be checked |
+
+At the printed scale no confirmed size has a matching drawn length within 3% on pages 4 and 5, so the single-part estimates are about 5% low for a reason not yet understood (the length taken is probably not the part's overall extent). Conclusion: with one confirmed size per part and linework that merges parts, this is a weak check, not an estimator; it needs several parts per sheet, a way to isolate a part's own linework, and sections from parts with stated sizes on more axes. Every result is `unconfirmed (inferred)`.

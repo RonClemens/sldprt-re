@@ -125,7 +125,7 @@ def vote(parts, tol=0.02):
     return out[:5]
 
 
-def estimate(pdf, page, refs, tol=0.02):
+def estimate(pdf, page, refs, tol=0.02, expected=None):
     import pdf_drawing as P, drawing_part as D
     sheet = P.read_pdf(pdf, [page]).sheets[0]; S, geo = D.read_segments(pdf, page); C = D.circles(S); objw = _objw(S)
     rows = bom_rows(sheet); bl = balloons(sheet, C, S, set(rows))
@@ -139,6 +139,13 @@ def estimate(pdf, page, refs, tol=0.02):
         parts.append(dict(item=b['item'], drawing=dwg, name=r['name'], sizes=sizes, target=b['target'], lengths=local_lengths(S, b['target'], objw)))
     res = dict(page=page, parts=[dict(item=p['item'], drawing=p['drawing'], name=p['name'], confirmed_sizes_in=p['sizes'], leader_end=[round(x, 1) for x in p['target']], lengths_found=len(p['lengths'])) for p in parts], balloons=len(bl), skipped=skipped, rows=len(rows))
     cl = vote(parts, tol); res['candidates'] = cl
+    if expected:                                                                      # the printed scale as a check: which confirmed sizes have a drawn length of that size near their balloon
+        hits = []
+        for p in parts:
+            for ax, d in p['sizes'].items():
+                for L, kind in p['lengths']:
+                    if abs(L / d / expected - 1) <= 0.03: hits.append(dict(item=p['item'], drawing=p['drawing'], axis=ax, size_in=d, drawn_pt=round(L, 1), kind=kind)); break
+        res['at_printed_scale'] = dict(scale_pt_per_in=expected, confirmed_by=hits, parts_with_a_match=sorted({h['item'] for h in hits}), parts_tried=[p['item'] for p in parts])
     if cl:
         top = cl[0]; res['scale_pt_per_in'] = round(top['scale'], 3); res['supporting_parts'] = top['parts']; res['status'] = 'unconfirmed (inferred from %d part%s: %s)' % (len(top['parts']), '' if len(top['parts']) == 1 else 's', ', '.join(top['parts']))
         res['ratio'] = '1 : %.2f' % (72.0 / top['scale']) if top['scale'] else None
