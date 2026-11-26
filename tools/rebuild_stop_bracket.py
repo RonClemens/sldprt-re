@@ -2,11 +2,11 @@
 """Worked example: a drawing with no CAD part, rebuilt zone by zone. The STOP BRACKET (Hydro package, drawing 27244633, page 41 of the TDP): an L8x6x0.5 steel angle 3 1/2 in long with four slots in the base,
 two holes in the upright and a gusset plate.
 
-  python3 tools/rebuild_stop_bracket.py TDP.pdf OUT_DIR --fcpython /path/to/freecadcmd [--page 41]
+  python3 tools/rebuild_stop_bracket.py TDP.pdf OUT_DIR --fcpython /path/to/freecadcmd [--page 41] [--cad PART.SLDPRT]
 
 What is automatic: the zones and views (sheet_zones), the dimensions (pdf_drawing), the circles and slots in the linework (drawing_part.circles / slots), the scale of each view from its overall outline against the printed
-overall dimension, and the check of each hole and slot position against the printed dimensions (stated / unconfirmed). What is my reading of the drawing and is written in this script: which view shows what (V1 the upright seen from outside,
-V6 the base from above, V2 the side with the gusset, V5 the gusset's own profile), how the dimension chains are referenced (from the right edge, from the top edge), and that the gusset stands against the upright's inner face.
+overall dimension, and the check of each hole and slot position against the printed dimensions (stated / unconfirmed). What is my reading of the drawing and is written in this script: which view shows what (V1 the upright seen from the gusset side,
+V6 the base from above, V2 the side with the gusset, V5 the gusset's own profile), how the dimension chains are referenced (from the right edge, from the top edge), and that the gusset stands against the upright's inner face (an earlier version of this script misread the dimension chain and put the gusset 2 3/8 from the edge; the CAD part has it centred, which the measured strip lines agree with).
 Check those against the sheet before using the result for anything; the weight check at the end is the independent test: the solid's volume times the density of ASTM A36 steel against the weight printed on the sheet.
 Not modelled: the rounded outer corners of the angle, the inner corner radius, weld fillets, the thread of the 3/8-16 UNC holes. The callout diameters (5/16 in holes, 17/32 in slots) are not in the text the reader recovers (stacked fractions after the
 diameter symbol): they are taken from the measured circles and slots and agree with the callouts as seen in the zoomed crops.
@@ -67,8 +67,11 @@ def run(pdf, out_dir, fcpython, page=PAGE):
     ang_len = 3.5; leg_up = 8.0; leg_base = 6.0; t = 0.5
     prov += [dict(name='angle member', value='L8x6x0.5 x 3 1/2', status='stated (BOM item 2.5.1)', evidence='8 in upright, 6 in base, 1/2 in thick'), dict(name='gusset thickness', value=0.25, status='stated', evidence='printed 1/4"'),
              dict(name='gusset profile', value='6 tall against the upright, 3 wide at the foot, 1/2 wide at the top, 1/2 x 45 chamfer at the corner', status='stated', evidence='V5 printed 6", 3", 1/2", 1/2" X 45')]
-    g_pos = 2.375                                                                    # the gusset strip's centre from the right edge in V1: 3/4 + 1 5/8
-    prov.append(dict(name='gusset position along the member', value=g_pos, status='stated (chain 3/4 + 1 5/8)', evidence='V1 chain; mirrored end is not determined by the sheet'))
+    # the gusset's edge-on strip in V1: two long vertical object lines inside the outline, 1/4 in apart (its thickness); the printed 1 5/8 is the distance from the right edge to its near line
+    strip = sorted((b1[2] - x0) / s1 for x0, y0, x1, y1, w in S if abs(x0 - x1) < 0.1 and b1[0] + 3 < x0 < b1[2] - 3 and b1[1] <= min(y0, y1) and max(y0, y1) <= b1[3] and abs(y1 - y0) > 0.5 * (b1[3] - b1[1]) and w >= 0.6)
+    need(len(strip) >= 2, 'the gusset strip is not visible in the upright view'); e1, e2 = strip[0], strip[-1]; need(abs((e2 - e1) - 0.25) < 0.03, f'the strip is {e2 - e1:.3f} in wide, not 1/4')
+    pid = printed(e1, 'V1'); g_pos = (float(dims[pid].value) + 0.125) if pid else (e1 + e2) / 2
+    prov.append(dict(name='gusset position along the member (centre, from the right edge)', value=round(g_pos, 4), measured=round((e1 + e2) / 2, 4), status='stated (printed ' + dims[pid].text.strip() + ' to the near face + 1/8)' if pid else 'unconfirmed (measured)', evidence='V1: two vertical lines 1/4 in apart'))
     json.dump(dict(provenance=prov, scales=dict(V1=s1, V6=s6)), open(os.path.join(out_dir, 'bracket_provenance.json'), 'w'), indent=1, default=float)
     spec = dict(L=ang_len, up=leg_up, base=leg_base, t=t, upright_holes=upright, slots=base_slots, gusset=dict(pos=g_pos, t=0.25, height=6.0, foot=3.0, top=0.5, chamfer=0.5))
     fc = r'''
@@ -105,12 +108,38 @@ print(json.dumps(dict(volume_in3=round(solid.Volume / IN ** 3, 3), solids=len(so
     json.dump(res, open(os.path.join(out_dir, 'bracket_result.json'), 'w'), indent=1); return res, prov
 
 
+def compare_cad(spec, cad_path, out_dir):
+    """the rebuild against the CAD part's exact features: extents, slot centres, upright holes, gusset thickness and position, wall thicknesses. CAD frame: X across the member (centred), Y up, Z along the base from the upright's outer face."""
+    from part_features import part_features
+    f = part_features(cad_path); IN = 25.4; rows = []
+    def add(what, mine, cad, unit='in'): rows.append(dict(what=what, rebuild=round(float(mine), 4), cad=round(float(cad), 4), delta=round(float(mine) - float(cad), 4), unit=unit))
+    lo, hi = f['bbox_mm']; add('length of the member', spec['L'], (hi[0] - lo[0]) / IN); add('upright height', spec['up'], (hi[1] - lo[1]) / IN); add('base leg', spec['base'], (hi[2] - lo[2]) / IN)
+    holes = [c for c in f['cylinders'] if c['kind'] == 'hole']
+    slot_cyl = sorted([c for c in holes if c['axis_label'] == '+Y' and abs(c['diameter_mm'] - 13.4925) < 0.05], key=lambda c: (round(c['foot_mm'][0]), c['foot_mm'][2]))
+    cad_slots = []
+    for i in range(0, len(slot_cyl) - 1, 2):
+        a, b = slot_cyl[i], slot_cyl[i + 1]; cad_slots.append(((a['foot_mm'][0] / IN), ((a['foot_mm'][2] + b['foot_mm'][2]) / 2 / IN), abs(b['foot_mm'][2] - a['foot_mm'][2]) / IN, a['diameter_mm'] / IN))
+    mine = sorted([(sl[1], sl[0], sl[3], sl[2]) for sl in spec['slots']])         # (y across from the top edge, x from the upright face, length, width)
+    mine_xy = sorted([(round(spec['L'] / 2 - yc, 3), xc, ln, w) for xc, yc, w, ln in spec['slots']])
+    cad_xy = sorted([(round(x, 3), z, ln, w) for x, z, ln, w in cad_slots])
+    for k, (m, c) in enumerate(zip(mine_xy, cad_xy), 1):
+        add(f'slot {k}: across the member (from the middle)', m[0], c[0]); add(f'slot {k}: along the base (from the upright face)', m[1], c[1]); add(f'slot {k}: length between centres', m[2], c[2]); add(f'slot {k}: width', m[3], c[3])
+    cu = sorted([(c['foot_mm'][1] / IN, c['foot_mm'][0] / IN, c['diameter_mm'] / IN) for c in holes if c['axis_label'] == '+Z' and abs(c['diameter_mm'] - 7.9375) < 0.05]); mu = sorted([(yu, spec['L'] / 2 - xr, d) for xr, yu, d in spec['upright_holes']])
+    for k, (m, c) in enumerate(zip(mu, cu), 1): add(f'upright hole {k}: height', m[0], c[0]); add(f'upright hole {k}: across (from the middle)', m[1], c[1]); add(f'upright hole {k}: diameter', m[2], c[2])
+    gx = sorted({abs(p['d_mm']) for p in f['planes'] if p['axis'] in ('+X', '-X') and abs(p['d_mm']) < 5})
+    if gx: add('gusset thickness', spec['gusset']['t'], 2 * gx[0] / IN); add('gusset centre across the member (from the middle)', spec['L'] / 2 - spec['gusset']['pos'], 0.0)
+    json.dump(rows, open(os.path.join(out_dir, 'bracket_vs_cad.json'), 'w'), indent=1); return rows
+
+
 def main():
     a = sys.argv[1:]
     if len(a) < 2 or '--fcpython' not in a: raise SystemExit(__doc__)
     res, prov = run(a[0], a[1], a[a.index('--fcpython') + 1], int(a[a.index('--page') + 1]) if '--page' in a else PAGE)
     for p in prov: print(f"{p['name']:58s} {str(p['value']):28s} {p['status']}")
     print(json.dumps(res))
+    if '--cad' in a:
+        rows = compare_cad(json.load(open(os.path.join(a[1], 'bracket_spec.json'))), a[a.index('--cad') + 1], a[1]); print('\nrebuild against the CAD part:')
+        for r in rows: print(f"  {r['what']:58s} rebuild {r['rebuild']:8} cad {r['cad']:8} delta {r['delta']:8} {r['unit']}")
 
 
 if __name__ == '__main__':
