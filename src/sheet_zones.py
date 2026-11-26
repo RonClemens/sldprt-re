@@ -110,7 +110,10 @@ def read_zones(pdf, page, projection='third', unit=None, virtual_grid=True):
     Sv = S[keep]; C = DP.circles(Sv)
     for k, a in enumerate(geo.arcs):
         if a[2] > 5 and (a[3][2] - a[3][0]) > 1.8 * a[2] and not any(np.hypot(a[0] - c['cx'], a[1] - c['cy']) < 0.5 and abs(a[2] - c['r']) < 0.5 for c in C) and not (tbbox and a[0] >= tbbox[0] and a[1] <= tbbox[3]): C.append(dict(cx=float(a[0]), cy=float(a[1]), r=float(a[2]), w=float(geo.arc_w[k]) if k < len(geo.arc_w) else 0.7))
-    objw = float(np.median([c['w'] for c in C])) - 0.05 if C else 0.6
+    if C: objw = float(np.median([c['w'] for c in C])) - 0.05
+    else:                                                                            # no circles to take the object width from: the heaviest stroke width that carries at least 10 percent of the drawn length
+        ln = np.hypot(Sv[:, 2] - Sv[:, 0], Sv[:, 3] - Sv[:, 1]) if len(Sv) else np.zeros(0); wr = np.round(Sv[:, 4], 2) if len(Sv) else np.zeros(0); tot = float(ln.sum()) or 1.0
+        heavy = [w for w in sorted(set(wr.tolist()), reverse=True) if float(ln[wr == w].sum()) >= 0.10 * tot]; objw = (heavy[0] - 0.05) if heavy else 0.6
     views = []
     cl = [list(c) for c in _clusters(Sv, geo, objw)]; balloons = []; symbols = []  # balloons here: object-width lone circles only; thin item balloons are listed in the result as callout_balloons
     for c in list(cl):                                                              # a lone circle of 30 to 80 pt (an item balloon) and anything under 20 pt (arrowheads, datum marks) are callout symbols, not views

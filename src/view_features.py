@@ -34,6 +34,12 @@ def _overlap(a0, a1, b0, b1): return max(0.0, min(a1, b1) - max(a0, b0))
 
 
 def _roles(views, projection):
+    for v in views:                                                                  # views of one part that are aligned in a layout share their extent along the aligned axis exactly: that is orthographic projection, whatever the slant of the lines (the end view of a round part)
+        if v['type'] != 'pictorial': continue
+        for w in views:
+            if w is v or (w['box'][2] - w['box'][0]) * (w['box'][3] - w['box'][1]) < 0.02 * (v['box'][2] - v['box'][0]) * (v['box'][3] - v['box'][1]): continue
+            if (abs(v['box'][0] - w['box'][0]) < 2.5 and abs(v['box'][2] - w['box'][2]) < 2.5 and (v['box'][2] - v['box'][0]) > 20) or (abs(v['box'][1] - w['box'][1]) < 2.5 and abs(v['box'][3] - w['box'][3]) < 2.5 and (v['box'][3] - v['box'][1]) > 20):
+                v['type'] = 'orthographic'; v['type_note'] = f"aligned with {w['id']}: identical extent"; break
     ortho = [v for v in views if v['type'] == 'orthographic']
     if not ortho: return
     area = lambda v: (v['box'][2] - v['box'][0]) * (v['box'][3] - v['box'][1]); big = max(area(v) for v in ortho)

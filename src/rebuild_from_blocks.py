@@ -294,22 +294,31 @@ def compare_cad(spec, step, cad_path, out_dir, fcpython, grid=36):
     if best is None: res['mapping'] = None; res['note'] = 'the extents do not match under any axis permutation'; return res
     (m, _), perm, flips, pairs, used = best
     res['mapping'] = dict(permutation=list(perm), flips=list(flips)); res['holes'] = dict(rebuild_cuts=len(rb), cad_holes=len(cad_holes), matched=m, mean_position_error_in=round(float(np.mean(pairs)), 4) if pairs else None, max_position_error_in=round(float(np.max(pairs)), 4) if pairs else None, cad_holes_not_in_rebuild=len(cad_holes) - len(used), rebuild_cuts_not_in_cad=len(rb) - m)
-    # volume overlap: sample the CAD box
     P3 = np.array(load_part(cad_path, os.path.join(HERE, 'sch_13006_s_t.txt'))[:3][0]) * 1000 / IN; Fi = np.asarray(load_part(cad_path, os.path.join(HERE, 'sch_13006_s_t.txt'))[2], int)
-    xs = [np.linspace(lo[i] + ext[i] / (2 * grid), hi[i] - ext[i] / (2 * grid), grid) for i in range(3)]; G = np.array(np.meshgrid(*xs, indexing='ij')).reshape(3, -1).T; cad_in = _inside_mesh(G, P3, Fi)
-    inv = np.zeros(3, int);
-    for i in range(3): inv[perm[i]] = i
-    # rebuilt frame coordinates of each CAD-frame sample
-    R = np.zeros_like(G)
+    res['volume'] = volume_overlap(step, P3, Fi, lo, ext, mine, perm, flips, out_dir, fcpython, grid)
+    json.dump(res, open(os.path.join(out_dir, 'comparison.json'), 'w'), indent=1); return res
+
+
+def volume_overlap(step, P3, Fi, lo, ext, mine, perm, flips, out_dir, fcpython, grid=36):
+    """intersection over union of the rebuilt STEP and a mesh (P3 in inches, Fi triangles) on a grid of points in the mesh's bounding box (lo, ext in inches); perm / flips map the rebuilt frame onto the mesh's"""
+    hi = lo + ext
+    xs = [np.linspace(lo[i] + ext[i] / (2 * grid), hi[i] - ext[i] / (2 * grid), grid) for i in range(3)]; G_ = np.array(np.meshgrid(*xs, indexing='ij')).reshape(3, -1).T; cad_in = _inside_mesh(G_, P3, Fi)
+    R = np.zeros_like(G_)
     for i in range(3):
-        c = G[:, perm[i]] - lo[perm[i]]; R[:, i] = (mine[i] - c) if flips[i] else c
+        c = G_[:, perm[i]] - lo[perm[i]]; R[:, i] = (mine[i] - c) if flips[i] else c
     pts = os.path.join(out_dir, '_samples.json'); json.dump((R * IN).tolist(), open(pts, 'w'))
     script = f"import json, Part\nsh = Part.read({step!r}); P = json.load(open({pts!r})); out = [1 if sh.isInside(__import__('FreeCAD').Vector(*p), 1e-6, True) else 0 for p in P]; json.dump(out, open({pts + '.out'!r}, 'w'))\n"
     sp = os.path.join(out_dir, '_inside.py'); open(sp, 'w').write(script); subprocess.run([fcpython, '-c', f"exec(open({sp!r}).read())"], capture_output=True, text=True, timeout=1800)
     mine_in = np.array(json.load(open(pts + '.out')), bool); inter = int((mine_in & cad_in).sum()); union = int((mine_in | cad_in).sum())
-    res['volume'] = dict(samples=len(G), cad_inside=int(cad_in.sum()), rebuild_inside=int(mine_in.sum()), intersection=inter, union=union, iou=round(inter / union, 4) if union else None, only_in_rebuild=int((mine_in & ~cad_in).sum()), only_in_cad=int((cad_in & ~mine_in).sum()),
-                         note='the CAD side is a ray-parity test on its mesh; a mesh that is not closed gives wrong parity')
-    json.dump(res, open(os.path.join(out_dir, 'comparison.json'), 'w'), indent=1); return res
+    return dict(samples=len(G_), cad_inside=int(cad_in.sum()), rebuild_inside=int(mine_in.sum()), intersection=inter, union=union, iou=round(inter / union, 4) if union else None, only_in_rebuild=int((mine_in & ~cad_in).sum()), only_in_cad=int((cad_in & ~mine_in).sum()),
+                note='the other side is a ray-parity test on a mesh; a mesh that is not closed gives wrong parity')
+
+
+def compare_mesh(spec, step, V_mm, F, out_dir, fcpython, perm=(0, 1, 2), flips=(0, 0, 1), grid=28):
+    """overlap with a mesh (mm) whose frame is related to the rebuilt one by perm / flips (default: the frame the GLB drawings are made in: front view from +z, so the depth runs from +z)"""
+    V = V_mm / IN; lo = V.min(0); ext = V.max(0) - lo; mine = np.array([spec['X'], spec['Y'], spec['D']])
+    res = dict(extents=dict(rebuild=[round(float(x), 3) for x in mine], mesh=[round(float(x), 3) for x in ext]), mapping=dict(permutation=list(perm), flips=list(flips)))
+    res['volume'] = volume_overlap(step, V, F, lo, ext, mine, perm, flips, out_dir, fcpython, grid); return res
 
 
 def report(spec, build, comp=None, name=''):
