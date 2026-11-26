@@ -16,7 +16,8 @@ def one(a):
     try:
         z = Z.read_zones(pdf, page)
     except Exception as e: return dict(page=page, error=f'{type(e).__name__}: {str(e)[:100]}')
-    return dict(page=page, grid=z['grid'] and dict(columns=z['grid']['columns'], rows=z['grid']['rows']), views=[dict(id=v['id'], range=v['range'], type=v['type'], dims=len(v['dims']), circles=v['circles'], title=v['title'], scale=v['scale']) for v in z['views']],
+    roles = collections.Counter(v['role'].split(' (')[0] for v in z['views']); holes = collections.Counter(f['type'] for v in z['views'] for f in v['features']); fil = collections.Counter(f['radius_in'] for v in z['views'] for f in v['fillets'] for _ in range(f['count']))
+    return dict(page=page, roles=dict(roles), hole_types=dict(holes), fillet_radii_in={str(k): n for k, n in fil.items()}, slots=sum(len(v['slots']) for v in z['views']), chamfers=sum(len(v['chamfers']) for v in z['views']), dimension_directions=dict(collections.Counter(d.get('direction') for v in z['views'] for d in v['dimension_axes'])), grid=z['grid'] and dict(columns=z['grid']['columns'], rows=z['grid']['rows']), views=[dict(id=v['id'], range=v['range'], type=v['type'], dims=len(v['dims']), circles=v['circles'], title=v['title'], scale=v['scale']) for v in z['views']],
                 tables=[dict(kind=t['kind'], range=t['range']) for t in z['tables']], zone_classes=dict(collections.Counter(zz['class'] for zz in z['zones'].values())), zones=len(z['zones']))
 
 
@@ -36,7 +37,9 @@ def main():
             except Exception as e: res.append(dict(page=p, error=type(e).__name__))
     ok = [r for r in res if 'error' not in r]; zc = collections.Counter()
     for r in ok: zc.update(r['zone_classes'])
-    S = dict(pages=len(res), errors=len(res) - len(ok), with_grid=sum(1 for r in ok if r['grid']), grids=dict(collections.Counter(f"{len(r['grid']['columns'])}x{len(r['grid']['rows'])}" for r in ok if r['grid'])), views=sum(len(r['views']) for r in ok), zone_classes=dict(zc),
+    roles = collections.Counter(); ht = collections.Counter(); fr = collections.Counter(); dd = collections.Counter()
+    for r in ok: roles.update(r['roles']); ht.update(r['hole_types']); fr.update(r['fillet_radii_in']); dd.update(r['dimension_directions'])
+    S = dict(view_roles=dict(roles), hole_types=dict(ht), fillet_radii_in=dict(fr), slots=sum(r['slots'] for r in ok), chamfer_items=sum(r['chamfers'] for r in ok), dimension_directions=dict(dd), pages=len(res), errors=len(res) - len(ok), with_grid=sum(1 for r in ok if r['grid']), grids=dict(collections.Counter(f"{len(r['grid']['columns'])}x{len(r['grid']['rows'])}" for r in ok if r['grid'])), views=sum(len(r['views']) for r in ok), zone_classes=dict(zc),
              pages_with_bom=sum(1 for r in ok if any(t['kind'] == 'BOM table' for t in r['tables'])), pages_with_title_block=sum(1 for r in ok if any(t['kind'] == 'title block' for t in r['tables'])))
     json.dump(dict(summary=S, pages=res), open(a[1], 'w'), indent=1)
     if opt('--md'):

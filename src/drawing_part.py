@@ -71,6 +71,8 @@ def slots(S, min_segs=10):
         if len(comp) < min_segs: continue
         seg = S[comp]; pts = np.vstack([seg[:, :2], seg[:, 2:4]]); x0, y0 = pts.min(0); x1, y1 = pts.max(0); w, h = x1 - x0, y1 - y0; lo, hi = min(w, h), max(w, h)
         if lo < 4 or hi < 1.2 * lo: continue
+        ln = np.hypot(seg[:, 2] - seg[:, 0], seg[:, 3] - seg[:, 1])
+        if float(np.median(seg[:, 4])) < 0.6 or len(comp) < 14 or int((ln >= 0.6 * (hi - lo)).sum()) < 2 or int((ln < 0.4 * lo).sum()) < 8: continue          # two long straight sides and many short segments for the round ends
         per = float(np.hypot(seg[:, 2] - seg[:, 0], seg[:, 3] - seg[:, 1]).sum()); stad = 2 * (hi - lo) + np.pi * lo
         if abs(per - stad) <= 0.04 * stad: out.append(dict(cx=float((x0 + x1) / 2), cy=float((y0 + y1) / 2), width=float(lo), length_between_centres=float(hi - lo), orientation='x' if w >= h else 'y', w=float(np.median(seg[:, 4]))))
     return out
