@@ -181,7 +181,7 @@ def analyse_views(sheet, Sv, geo, C, views, SL, projection='third'):
             feat['profile_from'] = prof[0] if prof else None; v['features'].append(feat)
         for sl in SL:
             if b[0] <= sl['cx'] <= b[2] and b[1] <= sl['cy'] <= b[3]: v['slots'].append(dict(width_in=round(sl['width'] / s, 4), length_between_centres_in=round(sl['length_between_centres'] / s, 4), orientation=sl['orientation'], centre_pt=[round(sl['cx'], 1), round(sl['cy'], 1)]))
-        arcs = [a for a in geo.arcs if b[0] - 1 <= a[0] <= b[2] + 1 and b[1] - 1 <= a[1] <= b[3] + 1 and (a[3][2] - a[3][0]) < 1.5 * a[2] and a[2] > 2]
+        arcs = [a for k, a in enumerate(geo.arcs) if b[0] - 1 <= a[0] <= b[2] + 1 and b[1] - 1 <= a[1] <= b[3] + 1 and (a[3][2] - a[3][0]) < 1.5 * a[2] and a[2] / s >= 0.06 and (geo.arc_w[k] if k < len(geo.arc_w) else 1.0) >= 0.6]       # object-width arcs of at least 1/16 in: thinner or smaller ones are glyph shapes, centre marks, arrowheads
         rr = {}
         for a in arcs: rr.setdefault(round(a[2] / s, 3), []).append([round(a[0], 1), round(a[1], 1)])
         v['fillets'] = [dict(radius_in=r, count=len(p), at_pt=p[:4]) for r, p in sorted(rr.items())]
@@ -190,7 +190,7 @@ def analyse_views(sheet, Sv, geo, C, views, SL, projection='third'):
         for nm, (kx, ky) in dict(bl=(b[0], b[1]), br=(b[2], b[1]), tl=(b[0], b[3]), tr=(b[2], b[3])).items():
             vv = next((iv for k, iv in Vv.items() if abs(k - kx) < 0.4), []); hh = next((iv for k, iv in Hh.items() if abs(k - ky) < 0.4), [])
             sv = min([min(abs(a - ky), abs(c - ky)) for a, c in vv]) if vv else None; sh = min([min(abs(a - kx), abs(c - kx)) for a, c in hh]) if hh else None
-            if sv is not None and sh is not None and sv > 3 and abs(sv - sh) < 1.0 and sv < 0.5 * min(b[2] - b[0], b[3] - b[1]):
+            if sv is not None and sh is not None and sv > 3 and sv / s >= 0.06 and abs(sv - sh) < 1.0 and sv < 0.5 * min(b[2] - b[0], b[3] - b[1]):
                 r_in = round(float((sv + sh) / 2 / s), 3); dx = 1 if kx == b[0] else -1; dy = 1 if ky == b[1] else -1
                 p1 = (kx + dx * sh, ky); p2 = (kx, ky + dy * sv)
                 chamfer = any((np.hypot(a0 - p1[0], a1 - p1[1]) < 1.5 and np.hypot(a2 - p2[0], a3 - p2[1]) < 1.5) or (np.hypot(a0 - p2[0], a1 - p2[1]) < 1.5 and np.hypot(a2 - p1[0], a3 - p1[1]) < 1.5) for a0, a1, a2, a3, _ in Sv if abs(a0 - a2) > 0.5 and abs(a1 - a3) > 0.5)     # one straight segment between the two stops
