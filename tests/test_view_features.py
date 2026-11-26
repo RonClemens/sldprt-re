@@ -38,7 +38,7 @@ pg.text(X0 + 60, Y0 + 12, '0.875 THRU ALL', 3.5)
 path = os.path.join(tempfile.mkdtemp(), 'part.pdf'); G.write_pdf(pg, path)
 
 
-z = Z.read_zones(path, 1, unit='inch'); views = {v['id']: v for v in z['views']}
+z = Z.read_zones(path, 1, unit='inch', virtual_grid=False); views = {v['id']: v for v in z['views']}
 roles = {v['role']: v for v in z['views']}
 assert 'front' in roles and 'bottom' in roles, [v['role'] for v in z['views']]                                     # plan below the elevation: third-angle reading calls it the bottom view
 front, bottom = roles['front'], roles['bottom']; assert front['box'][1] > bottom['box'][3] and front['axes'] == dict(horizontal='X', vertical='Y') and bottom['axes'] == dict(horizontal='X', vertical='Z'), (front['axes'], bottom['axes'])
@@ -53,6 +53,6 @@ blocks = [zz['blocks'] for zz in z['zones'].values() if zz['blocks']['views']]; 
 # a countersunk hole: a circle pair in one view whose neighbour shows slanted lines between the two radii
 pg2 = G.Page(); X0, Y0 = 100.0, 40.0; pg2.rect(X0, Y0, X0 + 60, Y0 + 60, 0.35); pg2.circle(X0 + 30, Y0 + 30, 8, 0.35); pg2.circle(X0 + 30, Y0 + 30, 4, 0.35)
 pg2.rect(X0, 120.0, X0 + 60, 140.0, 0.35); pg2.line(X0 + 22, 120.0, X0 + 26, 130.0, 0.35); pg2.line(X0 + 38, 120.0, X0 + 34, 130.0, 0.35); pg2.line(X0 + 26, 130.0, X0 + 26, 140.0, 0.35); pg2.line(X0 + 34, 130.0, X0 + 34, 140.0, 0.35)
-p2 = os.path.join(os.path.dirname(path), 'csk.pdf'); G.write_pdf(pg2, p2); z2 = Z.read_zones(p2, 1); hole = [f for v in z2['views'] for f in v['features'] if len(f['diameters_in']) == 2]
+p2 = os.path.join(os.path.dirname(path), 'csk.pdf'); G.write_pdf(pg2, p2); z2 = Z.read_zones(p2, 1, virtual_grid=False); hole = [f for v in z2['views'] for f in v['features'] if len(f['diameters_in']) == 2]
 assert hole and hole[0]['type'] == 'countersunk hole' and abs(hole[0]['countersink_diameter_in'] / hole[0]['hole_diameter_in'] - 2.0) < 0.05, [v['features'] for v in z2['views']]
 print('OK: front / bottom (third angle) or top (first angle), axes, scale from the label and shared, through / counterbored / countersunk holes with diameters and step lengths, fillet radii, dimension directions, zone blocks')

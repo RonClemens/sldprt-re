@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The zones of a drawing sheet (A1, C3, F8 ...), what each holds, and the views that span several of them, with zoomed crops of each.
 
-  python3 src/sheet_zones.py DRAWING.pdf PAGE [--json OUT.json] [--md OUT.md] [--crops DIR] [--dpi 200] [--projection third|first] [--unit inch|mm]        read_zones(pdf, page, projection='third', unit=None) -> dict        render_crop(pdf, page, bbox_pt, dpi, out_png)
+  python3 src/sheet_zones.py DRAWING.pdf PAGE [--json OUT.json] [--md OUT.md] [--crops DIR] [--dpi 200] [--projection third|first] [--unit inch|mm] [--no-virtual-grid]        read_zones(pdf, page, projection='third', unit=None) -> dict        render_crop(pdf, page, bbox_pt, dpi, out_png)
 
 A sheet's border carries a letter for each row and a number for each column (here letters down the sides, numbers along the top and bottom; the numbers run right to left). The labels are read from the page text (single
 characters in the margins), the zone boundaries are the midpoints between neighbouring labels and the border frame, and a zone is named letter + number as on the sheet (F8 is top left when the numbers run 8..1).
@@ -15,7 +15,7 @@ What it reports:
 With --crops DIR every view region and table is rendered to a PNG at --dpi so the details (a slot callout, a dimension chain) can be looked at one zone group at a time.
 
 Heuristics: the views are clusters of linework of object width (the width of the circles, else 0.6 pt) whose boxes lie within 8 pt of each other, after the border and title block are removed; a title is the text within 80 pt below
-(or above) a view's box; a view is pictorial when fewer than 60 percent of its long segments are horizontal or vertical. A sheet without readable margin labels gets a single zone `*` and no grid.
+(or above) a view's box; a view is pictorial when fewer than 60 percent of its long segments are horizontal or vertical. A sheet without readable margin labels gets a virtual grid (`grid['virtual']`): zones about 198 x 204 pt, the size of the labelled sheets of the Hydro package, numbered right to left and lettered top down as on a labelled sheet (`virtual_grid=False`: one zone `*`).
 """
 import collections, json, os, re, sys
 import numpy as np
@@ -76,7 +76,7 @@ def _range(names):
     return '+'.join(sorted(names)) if len(names) > 1 else (names[0] if names else '')
 
 
-def read_zones(pdf, page, projection='third', unit=None):
+def read_zones(pdf, page, projection='third', unit=None, virtual_grid=True):
     from pdf_drawing import read_pdf
     import drawing_part as DP
     sheet = read_pdf(pdf, pages=[page]).sheets[0]; S, geo = DP.read_segments(pdf, page); W, H = sheet.size_pt
@@ -86,6 +86,10 @@ def read_zones(pdf, page, projection='third', unit=None):
     if len(cols) >= 2 and len(rows) >= 2:
         xe = [fx0] + [(a[0] + b[0]) / 2 for a, b in zip(cols, cols[1:])] + [fx1]; ye = [fy1] + [(a[0] + b[0]) / 2 for a, b in zip(rows, rows[1:])] + [fy0]
         zones = {f'{rn}{cn}': dict(box=[xe[i], ye[j + 1], xe[i + 1], ye[j]]) for i, (_, cn) in enumerate(cols) for j, (_, rn) in enumerate(rows)}; grid = dict(columns=[c for _, c in cols], rows=[r for _, r in rows], x_edges=[round(x, 1) for x in xe], y_edges=[round(y, 1) for y in ye])
+    elif virtual_grid:                                                                 # no labels on the sheet: a grid of the same zone size as the labelled sheets of the package (about 198 x 204 pt), numbered the usual way
+        nc = max(2, round((fx1 - fx0) / 198.0)); nr = max(2, round((fy1 - fy0) / 204.0)); xe = [fx0 + (fx1 - fx0) * i / nc for i in range(nc + 1)]; ye = [fy1 - (fy1 - fy0) * j / nr for j in range(nr + 1)]
+        cn = [str(nc - i) for i in range(nc)]; rn = [chr(ord('A') + nr - 1 - j) for j in range(nr)]
+        zones = {f'{rn[j]}{cn[i]}': dict(box=[xe[i], ye[j + 1], xe[i + 1], ye[j]]) for i in range(nc) for j in range(nr)}; grid = dict(columns=cn, rows=rn, x_edges=[round(x, 1) for x in xe], y_edges=[round(y, 1) for y in ye], virtual=True)
     else: zones = {'*': dict(box=[fx0, fy0, fx1, fy1])}; grid = None
     for z in zones.values(): z.update(tags=[], dims=0, circles=0, text=0, views=[])
     # border and title block are not views
@@ -102,7 +106,18 @@ def read_zones(pdf, page, projection='third', unit=None):
         if a[2] > 5 and (a[3][2] - a[3][0]) > 1.8 * a[2] and not any(np.hypot(a[0] - c['cx'], a[1] - c['cy']) < 0.5 and abs(a[2] - c['r']) < 0.5 for c in C) and not (tbbox and a[0] >= tbbox[0] and a[1] <= tbbox[3]): C.append(dict(cx=float(a[0]), cy=float(a[1]), r=float(a[2]), w=float(geo.arc_w[k]) if k < len(geo.arc_w) else 0.7))
     objw = float(np.median([c['w'] for c in C])) - 0.05 if C else 0.6
     views = []
-    for (x0, y0, x1, y1, n) in _clusters(Sv, geo, objw):
+    cl = [list(c) for c in _clusters(Sv, geo, objw)]; balloons = []; symbols = []  # balloons here: object-width lone circles only; thin item balloons are listed in the result as callout_balloons
+    for c in list(cl):                                                              # a lone circle of 30 to 80 pt (an item balloon) and anything under 20 pt (arrowheads, datum marks) are callout symbols, not views
+        w_, h_ = c[2] - c[0], c[3] - c[1]
+        inside = [k for k in C if c[0] - 1 <= k['cx'] <= c[2] + 1 and c[1] - 1 <= k['cy'] <= c[3] + 1]
+        if 30 <= w_ <= 80 and 0.85 <= w_ / max(h_, 1e-6) <= 1.18 and len(inside) == 1 and abs(w_ - 2 * inside[0]['r']) < 3 and abs(h_ - 2 * inside[0]['r']) < 3: balloons.append(c); cl.remove(c)
+        elif max(w_, h_) < 20: symbols.append(c); cl.remove(c)
+    big = sorted(cl, key=lambda c: -(c[2] - c[0]) * (c[3] - c[1])); fragments = 0
+    for c in list(big):                                                             # a small cluster beside a much bigger one (a hidden-line or section fragment) is part of it
+        host = next((h for h in big if h is not c and (h[2] - h[0]) * (h[3] - h[1]) >= 8 * (c[2] - c[0]) * (c[3] - c[1]) and c[0] - 30 <= h[2] and h[0] <= c[2] + 30 and c[1] - 30 <= h[3] and h[1] <= c[3] + 30), None)
+        if host: host[0] = min(host[0], c[0]); host[1] = min(host[1], c[1]); host[2] = max(host[2], c[2]); host[3] = max(host[3], c[3]); host[4] += c[4]; big.remove(c); fragments += 1
+    cl = big
+    for (x0, y0, x1, y1, n) in cl:
         if n < 6 or max(x1 - x0, y1 - y0) < 20: continue
         long_ = [s for s in Sv if s[4] >= objw and min(x0, x1) - 1 <= min(s[0], s[2]) and max(s[0], s[2]) <= x1 + 1 and y0 - 1 <= min(s[1], s[3]) and max(s[1], s[3]) <= y1 + 1 and np.hypot(s[2] - s[0], s[3] - s[1]) >= 12]
         ortho = sum(1 for s in long_ if abs(s[0] - s[2]) < 0.5 or abs(s[1] - s[3]) < 0.5) / max(len(long_), 1)
@@ -158,7 +173,8 @@ def read_zones(pdf, page, projection='third', unit=None):
         names = [n for n, z in zones.items() if v['id'] in z['views']]; v['zones'] = sorted(names); v['range'] = _range(names)
     VF.zone_blocks(zones, views, sheet.dimensions)
     for t in tables: t['zones'] = sorted(n for n, z in zones.items() if _inter(z['box'], t['box']) >= 0.15 * min(max((z['box'][2] - z['box'][0]) * (z['box'][3] - z['box'][1]), 1.0), max((t['box'][2] - t['box'][0]) * (t['box'][3] - t['box'][1]), 1.0))); t['range'] = _range(t['zones'])
-    return dict(sheet_pt=[W, H], frame=[round(x, 1) for x in (fx0, fy0, fx1, fy1)], grid=grid, zones=zones, views=views, tables=tables, circles=len(C), dimensions=len(sheet.dimensions))
+    bal = [dict(centre_pt=[round(k['cx'], 1), round(k['cy'], 1)], radius_pt=round(k['r'], 1), text=next((n.text.strip() for n in sheet.notes if n.pos and np.hypot(n.pos[0] - k['cx'], n.pos[1] - k['cy']) < k['r']), ''), zone=next((nm for nm, zz in zones.items() if zz['box'][0] <= k['cx'] < zz['box'][2] and zz['box'][1] <= k['cy'] < zz['box'][3]), '')) for k in C if 12 <= k['r'] <= 40 and not any(v['box'][0] <= k['cx'] <= v['box'][2] and v['box'][1] <= k['cy'] <= v['box'][3] for v in views)]       # item balloons: thin circles outside every view
+    return dict(callout_balloons=bal, merged_fragments=fragments, sheet_pt=[W, H], frame=[round(x, 1) for x in (fx0, fy0, fx1, fy1)], grid=grid, zones=zones, views=views, tables=tables, circles=len(C), dimensions=len(sheet.dimensions))
 
 
 def render_crop(pdf, page, bbox, dpi, out):
@@ -203,14 +219,14 @@ def main():
     a = sys.argv[1:]
     if len(a) < 2 or a[0].startswith('-'): raise SystemExit(__doc__)
     opt = lambda n, d=None: a[a.index(n) + 1] if n in a else d
-    z = read_zones(a[0], int(a[1]), opt('--projection', 'third'), opt('--unit'))
+    z = read_zones(a[0], int(a[1]), opt('--projection', 'third'), opt('--unit'), '--no-virtual-grid' not in a)
     if opt('--json'): json.dump(z, open(opt('--json'), 'w'), indent=1, default=float)
     if opt('--md'): open(opt('--md'), 'w').write(blocks_markdown(z, os.path.basename(a[0]) + ' page ' + a[1]))
     if opt('--crops'):
         os.makedirs(opt('--crops'), exist_ok=True); dpi = int(opt('--dpi', 200))
         for v in z['views']: render_crop(a[0], int(a[1]), [v['box'][0] - 150, v['box'][1] - 110, v['box'][2] + 150, v['box'][3] + 110], dpi, os.path.join(opt('--crops'), f"{v['id']}_{v['range'].replace('+', '_')}.png"))
         for t in z['tables']: render_crop(a[0], int(a[1]), t['box'], dpi, os.path.join(opt('--crops'), f"{t['kind'].replace(' ', '_')}.png"))
-    g = z['grid']; print(f"sheet {z['sheet_pt']}, grid {('%d columns x %d rows' % (len(g['columns']), len(g['rows']))) if g else 'none'}, {len(z['views'])} views, {len(z['tables'])} tables, {z['circles']} circles, {z['dimensions']} dimensions")
+    g = z['grid']; print(f"sheet {z['sheet_pt']}, grid {('%d columns x %d rows%s' % (len(g['columns']), len(g['rows']), ' (virtual: the sheet has no zone labels)' if g.get('virtual') else '')) if g else 'none'}, {len(z['views'])} views, {len(z['tables'])} tables, {z['circles']} circles, {z['dimensions']} dimensions")
     for v in z['views']:
         print(f"  {v['id']} {v['range']:10s} {v['role'][:26]:26s} axes {v['axes']['horizontal']}/{v['axes']['vertical']} scale {str(v['scale_pt_per_in']):6s} ({v['scale_source'][:14]}) dims {len(v['dims']):2d} title {v['title']!r}")
         da = collections.Counter(d['direction'] for d in v['dimension_axes']); print(f"      dimensions: {dict(da)}")

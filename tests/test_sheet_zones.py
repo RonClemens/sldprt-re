@@ -29,7 +29,8 @@ top = next(v for v in z['views'] if v['circles'] >= 2); assert top['type'] == 'o
 assert z['dimensions'] >= 6 and sum(len(v['dims']) for v in z['views']) >= 5, (z['dimensions'], [len(v['dims']) for v in z['views']])
 assert any(zz['class'] == 'view' for zz in z['zones'].values()) and any(zz['class'] == 'empty' for zz in z['zones'].values())
 # a sheet without labels is one zone
-plain = G.build(); p2 = os.path.join(os.path.dirname(path), 'plain.pdf'); G.write_pdf(plain, p2); zp = Z.read_zones(p2, 1); assert zp['grid'] is None and list(zp['zones']) == ['*'], zp['zones'].keys()
+plain = G.build(); p2 = os.path.join(os.path.dirname(path), 'plain.pdf'); G.write_pdf(plain, p2); zp = Z.read_zones(p2, 1, virtual_grid=False); assert zp['grid'] is None and list(zp['zones']) == ['*'], zp['zones'].keys()
+zv = Z.read_zones(p2, 1); assert zv['grid']['virtual'] and zv['grid']['columns'] == ['6', '5', '4', '3', '2', '1'][-len(zv['grid']['columns']):] and zv['grid']['rows'][0] > zv['grid']['rows'][-1] and len(zv['zones']) == len(zv['grid']['columns']) * len(zv['grid']['rows']), zv['grid']   # numbered right to left, lettered top down
 # crops
 out = os.path.join(os.path.dirname(path), 'c.png'); Z.render_crop(path, 1, top['box'], 60, out); assert os.path.getsize(out) > 500
 assert Z._range(['F8', 'F7', 'E8', 'E7']) == 'F8-E7' and Z._range(['B2', 'C1']) == 'B2+C1' and Z._range(['A1']) == 'A1' and Z._range(['A2', 'A3']) == 'A3-A2' or Z._range(['A2', 'A3']) in ('A2-A3', 'A3-A2')
